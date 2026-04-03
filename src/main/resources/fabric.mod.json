@@ -1,0 +1,31 @@
+{
+	"schemaVersion": 1,
+	"id": "multifabricserver",
+	"version": "${version}",
+	"name": "MultiFabricServer",
+	"description": "Experimental Fabric mod exploring integrated multi-server orchestration in one JVM.",
+	"authors": [
+		"Uxzylon"
+	],
+	"contact": {
+		"homepage": "https://anthony.jeanney.fr",
+		"sources": "https://github.com/Uxzylon/MultiFabricServer"
+	},
+	"license": "CC0-1.0",
+	"icon": "assets/multifabricserver/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"fr.jeanney.MultiFabricServer"
+		]
+	},
+	"mixins": [
+		"multifabricserver.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.18.5",
+		"minecraft": "~26.1",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "multifabricserver-gametest",
+  "version": "1.0.0",
+  "name": "MultiFabricServer Cluster GameTest",
+  "environment": "*",
+  "entrypoints": {
+    "fabric-gametest": [
+      "fr.jeanney.ClusterRuntimeGameTests"
+    ]
+  },
+  "depends": {
+    "multifabricserver": "*"
+  }
+}
