@@ -7,7 +7,8 @@ public record ClusterNodeDefinition(
         boolean enabled,
         boolean autoStart,
         String transferHost,
-        int transferPort) {
+        int transferPort,
+        String proxyServerName) {
     public ClusterNodeDefinition {
         if (id == null || id.isBlank()) {
             throw new IllegalArgumentException("Node id cannot be blank");
@@ -17,6 +18,9 @@ public record ClusterNodeDefinition(
         }
         if (transferHost == null || transferHost.isBlank()) {
             throw new IllegalArgumentException("Node transferHost cannot be blank");
+        }
+        if (proxyServerName == null || proxyServerName.isBlank()) {
+            throw new IllegalArgumentException("Node proxyServerName cannot be blank");
         }
     }
 }

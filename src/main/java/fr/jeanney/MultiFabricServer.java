@@ -3,10 +3,13 @@ package fr.jeanney;
 import fr.jeanney.cluster.IntegratedClusterController;
 import fr.jeanney.cluster.ClusterGatewayProxy;
 import fr.jeanney.cluster.command.ClusterCommand;
+import fr.jeanney.cluster.network.ProxyConnectPayload;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,7 +27,10 @@ public final class MultiFabricServer implements ModInitializer {
     }
 
     @Override
+    @SuppressWarnings("null")
     public void onInitialize() {
+        PayloadTypeRegistry.clientboundPlay().register(ProxyConnectPayload.TYPE, ProxyConnectPayload.STREAM_CODEC);
+
         CommandRegistrationCallback.EVENT
                 .register((dispatcher, access, environment) -> ClusterCommand.register(dispatcher, CLUSTER_CONTROLLER));
 
@@ -46,6 +52,10 @@ public final class MultiFabricServer implements ModInitializer {
                 .register((handler, sender, server) -> CLUSTER_CONTROLLER.onPlayerJoin(server, handler.getPlayer()));
         ServerPlayConnectionEvents.DISCONNECT
                 .register((handler, server) -> CLUSTER_CONTROLLER.onPlayerDisconnect(server, handler.getPlayer()));
+        ServerMessageEvents.CHAT_MESSAGE.register((message, sender, params) -> {
+            CLUSTER_CONTROLLER.relayChatMessage(sender.level().getServer(), sender,
+                    message.decoratedContent().getString());
+        });
 
         LOGGER.info("Initialized experimental integrated multi-server cluster runtime");
     }

@@ -3,6 +3,7 @@ package fr.jeanney.cluster.command;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.ArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import fr.jeanney.cluster.ClusterPlayerPresence;
 import fr.jeanney.cluster.ClusterNodeRuntime;
 import fr.jeanney.cluster.ClusterNodeState;
 import fr.jeanney.cluster.IntegratedClusterController;
@@ -12,6 +13,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.permissions.Permission;
 import net.minecraft.server.permissions.PermissionLevel;
 
+import java.util.Comparator;
 import java.util.Objects;
 
 public final class ClusterCommand {
@@ -29,16 +31,21 @@ public final class ClusterCommand {
                 .then(Commands.literal("status")
                         .executes(context -> {
                             CommandSourceStack source = context.getSource();
-                            int players = controller.onlinePlayers(source.getServer());
+                            int localPlayers = source.getServer().getPlayerList().getPlayers().size();
+                            int sharedPlayers = controller.sharedOnlinePlayersCount();
                             source.sendSuccess(() -> Component.literal(
                                     "Integrated cluster status. initialized=" + controller.isInitialized()
                                             + ", configEnabled=" + controller.isConfigEnabled()
-                                            + ", players=" + players
+                                            + ", localPlayers=" + localPlayers
+                                            + ", sharedPlayers=" + sharedPlayers
                                             + ", gatewayEnabled=" + controller.isGatewayEnabled()
                                             + ", gatewayBind=" + controller.gatewayBindHost() + ":"
                                             + controller.gatewayBindPort()
                                             + ", hostTransfer=" + controller.hostTransferHost() + ":"
-                                            + controller.hostTransferPort()),
+                                            + controller.hostTransferPort()
+                                            + ", seamlessProxySwitch="
+                                            + controller.isSeamlessProxySwitchEnabled()
+                                            + ", proxyHostServer=" + controller.proxyHostServerName()),
                                     false);
                             for (ClusterNodeRuntime runtime : controller.allNodes()) {
                                 String line = "- " + runtime.definition().id() +
@@ -49,6 +56,32 @@ public final class ClusterCommand {
                                         " state=" + runtime.state() +
                                         (runtime.failureReason().isBlank() ? "" : " reason=" + runtime.failureReason());
                                 source.sendSuccess(() -> Component.literal(line), false);
+                            }
+                            return 1;
+                        }))
+                .then(Commands.literal("players")
+                        .executes(context -> {
+                            CommandSourceStack source = context.getSource();
+                            var sharedPlayers = controller.sharedOnlinePlayers().stream()
+                                    .sorted(Comparator.comparing(ClusterPlayerPresence::playerName,
+                                            String.CASE_INSENSITIVE_ORDER))
+                                    .toList();
+
+                            if (sharedPlayers.isEmpty()) {
+                                source.sendSuccess(() -> Component.literal("No players online across the cluster."),
+                                        false);
+                                return 1;
+                            }
+
+                            source.sendSuccess(
+                                    () -> Component.literal("Players online across cluster (" + sharedPlayers.size()
+                                            + "):"),
+                                    false);
+                            for (ClusterPlayerPresence player : sharedPlayers) {
+                                source.sendSuccess(
+                                        () -> Component.literal("- " + player.playerName() + " @ "
+                                                + player.clusterLabel()),
+                                        false);
                             }
                             return 1;
                         }))
@@ -189,13 +222,15 @@ public final class ClusterCommand {
 
     private static int transferToTarget(CommandSourceStack source, IntegratedClusterController controller,
             String target) {
-        if (source.getEntity() == null) {
+        var player = source.getPlayer();
+        if (player == null) {
             source.sendFailure(Component.literal("This command must be run by a player"));
             return 0;
         }
 
         int port;
         String host;
+        String targetNodeId;
         if ("host".equalsIgnoreCase(target) || "main".equalsIgnoreCase(target)) {
             host = controller.hostTransferHost();
             int defaultHostPort = controller.ownerPort().orElse(source.getServer().getPort());
@@ -205,16 +240,26 @@ public final class ClusterCommand {
             } else {
                 port = configuredHostPort > 0 ? configuredHostPort : defaultHostPort;
             }
+            targetNodeId = null;
         } else {
             ClusterNodeRuntime runtime = controller.node(target).orElse(null);
             if (runtime == null) {
                 source.sendFailure(Component.literal("Unknown target: " + target));
                 return 0;
             }
-            if (runtime.state() != ClusterNodeState.RUNNING) {
-                source.sendFailure(Component.literal(
-                        "Target node is not running: " + target + " (run /cluster start " + target + " first)"));
+            if (!runtime.definition().enabled()) {
+                source.sendFailure(Component.literal("Target node is disabled: " + target));
                 return 0;
+            }
+            if (runtime.state() != ClusterNodeState.RUNNING) {
+                boolean started = controller.startNode(source.getServer(), target);
+                ClusterNodeRuntime refreshedRuntime = controller.node(target).orElse(runtime);
+                if (!started || refreshedRuntime.state() != ClusterNodeState.RUNNING) {
+                    source.sendFailure(Component.literal(
+                            "Target node failed to start: " + target + " (check server logs)"));
+                    return 0;
+                }
+                runtime = refreshedRuntime;
             }
             if (controller.isGatewayEnabled()) {
                 host = controller.hostTransferHost();
@@ -223,6 +268,17 @@ public final class ClusterCommand {
                 host = runtime.definition().transferHost();
                 port = runtime.definition().transferPort();
             }
+            targetNodeId = target;
+        }
+
+        if (controller.isSeamlessProxySwitchEnabled()) {
+            boolean switched = controller.requestSeamlessProxyTravel(source.getServer(), player, targetNodeId);
+            if (!switched) {
+                source.sendFailure(Component.literal("Seamless proxy switch failed for target: " + target));
+                return 0;
+            }
+            source.sendSuccess(() -> Component.literal("Seamless switch requested: " + target), false);
+            return 1;
         }
 
         String transferCommand = "transfer " + host + " " + port;
@@ -233,13 +289,10 @@ public final class ClusterCommand {
                 return 0;
             }
 
-            var player = source.getPlayer();
-            if (player != null) {
-                if ("host".equalsIgnoreCase(target) || "main".equalsIgnoreCase(target)) {
-                    controller.preparePlayerHostTravel(source.getServer(), player);
-                } else {
-                    controller.rememberPlayerCluster(source.getServer(), player, target);
-                }
+            if (targetNodeId == null) {
+                controller.preparePlayerHostTravel(source.getServer(), player);
+            } else {
+                controller.rememberPlayerCluster(source.getServer(), player, targetNodeId);
             }
 
             return result;
