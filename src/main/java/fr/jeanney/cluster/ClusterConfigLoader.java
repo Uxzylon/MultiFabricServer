@@ -59,6 +59,8 @@ public final class ClusterConfigLoader {
         int gatewayBindPort = readInt(root, "gatewayBindPort", 25565);
         String hostTransferHost = readString(root, "hostTransferHost", "127.0.0.1");
         int hostTransferPort = readInt(root, "hostTransferPort", 25565);
+        boolean seamlessProxySwitchEnabled = readBoolean(root, "seamlessProxySwitchEnabled", false);
+        String proxyHostServerName = readString(root, "proxyHostServerName", "host");
         List<ClusterNodeDefinition> nodes = new ArrayList<>();
 
         JsonArray nodeArray = root.has("nodes") && root.get("nodes").isJsonArray()
@@ -77,13 +79,14 @@ public final class ClusterConfigLoader {
             boolean autoStart = readBoolean(nodeObject, "autoStart", false);
             String transferHost = readString(nodeObject, "transferHost", "127.0.0.1");
             int transferPort = readInt(nodeObject, "transferPort", listenPort);
+            String proxyServerName = readString(nodeObject, "proxyServerName", id);
 
             if (id.isBlank() || worldName.isBlank()) {
                 MultiFabricServer.LOGGER.warn("Skipping invalid cluster node with blank id/worldName: {}", nodeObject);
                 continue;
             }
             nodes.add(new ClusterNodeDefinition(id, worldName, listenPort, nodeEnabled, autoStart, transferHost,
-                    transferPort));
+                    transferPort, proxyServerName));
         }
 
         return new ClusterConfig(
@@ -93,6 +96,8 @@ public final class ClusterConfigLoader {
                 gatewayBindPort,
                 hostTransferHost,
                 hostTransferPort,
+                seamlessProxySwitchEnabled,
+                proxyHostServerName,
                 List.copyOf(nodes));
     }
 
@@ -135,6 +140,8 @@ public final class ClusterConfigLoader {
             root.addProperty("gatewayBindPort", defaultConfig.gatewayBindPort());
             root.addProperty("hostTransferHost", defaultConfig.hostTransferHost());
             root.addProperty("hostTransferPort", defaultConfig.hostTransferPort());
+            root.addProperty("seamlessProxySwitchEnabled", defaultConfig.seamlessProxySwitchEnabled());
+            root.addProperty("proxyHostServerName", defaultConfig.proxyHostServerName());
 
             JsonArray nodes = new JsonArray();
             for (ClusterNodeDefinition node : defaultConfig.nodes()) {
@@ -146,6 +153,7 @@ public final class ClusterConfigLoader {
                 nodeJson.addProperty("autoStart", node.autoStart());
                 nodeJson.addProperty("transferHost", node.transferHost());
                 nodeJson.addProperty("transferPort", node.transferPort());
+                nodeJson.addProperty("proxyServerName", node.proxyServerName());
                 nodes.add(nodeJson);
             }
             root.add("nodes", nodes);
@@ -172,6 +180,8 @@ public final class ClusterConfigLoader {
             root.addProperty("gatewayBindPort", config.gatewayBindPort());
             root.addProperty("hostTransferHost", config.hostTransferHost());
             root.addProperty("hostTransferPort", config.hostTransferPort());
+            root.addProperty("seamlessProxySwitchEnabled", config.seamlessProxySwitchEnabled());
+            root.addProperty("proxyHostServerName", config.proxyHostServerName());
 
             JsonArray nodes = new JsonArray();
             for (ClusterNodeDefinition node : config.nodes()) {
@@ -183,6 +193,7 @@ public final class ClusterConfigLoader {
                 nodeJson.addProperty("autoStart", node.autoStart());
                 nodeJson.addProperty("transferHost", node.transferHost());
                 nodeJson.addProperty("transferPort", node.transferPort());
+                nodeJson.addProperty("proxyServerName", node.proxyServerName());
                 nodes.add(nodeJson);
             }
             root.add("nodes", nodes);

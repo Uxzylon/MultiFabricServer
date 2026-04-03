@@ -9,6 +9,8 @@ public record ClusterConfig(
         int gatewayBindPort,
         String hostTransferHost,
         int hostTransferPort,
+        boolean seamlessProxySwitchEnabled,
+        String proxyHostServerName,
         List<ClusterNodeDefinition> nodes) {
 
     public static ClusterConfig defaultConfig() {
@@ -19,7 +21,9 @@ public record ClusterConfig(
                 25565,
                 "127.0.0.1",
                 25565,
+                false,
+                "host",
                 List.of(new ClusterNodeDefinition("creative", "creativeworld", 25580, true, false, "127.0.0.1",
-                        25580)));
+                        25580, "creative")));
     }
 }
