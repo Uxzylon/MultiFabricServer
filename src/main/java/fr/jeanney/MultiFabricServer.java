@@ -52,6 +52,13 @@ public final class MultiFabricServer implements ModInitializer {
                 .register((handler, sender, server) -> CLUSTER_CONTROLLER.onPlayerJoin(server, handler.getPlayer()));
         ServerPlayConnectionEvents.DISCONNECT
                 .register((handler, server) -> CLUSTER_CONTROLLER.onPlayerDisconnect(server, handler.getPlayer()));
+        ServerMessageEvents.ALLOW_GAME_MESSAGE
+                .register((server, message, overlay) -> CLUSTER_CONTROLLER.allowGameMessage(server, message, overlay));
+        ServerMessageEvents.GAME_MESSAGE
+                .register((server, message, overlay) -> CLUSTER_CONTROLLER.relayAdvancementGameMessage(
+                        server,
+                        message,
+                        overlay));
         ServerMessageEvents.CHAT_MESSAGE.register((message, sender, params) -> {
             CLUSTER_CONTROLLER.relayChatMessage(sender.level().getServer(), sender,
                     message.decoratedContent().getString());

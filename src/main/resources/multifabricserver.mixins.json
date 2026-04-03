@@ -3,6 +3,7 @@
 	"package": "fr.jeanney.mixin",
 	"compatibilityLevel": "JAVA_25",
 	"mixins": [
+		"CommandSourceStackCommandFeedbackMixin",
 		"DedicatedServerChildShutdownMixin",
 		"MinecraftServerChildShutdownMixin"
 	],

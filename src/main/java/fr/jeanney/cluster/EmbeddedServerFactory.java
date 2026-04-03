@@ -37,6 +37,7 @@ import java.lang.reflect.Constructor;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.Optional;
@@ -139,7 +140,8 @@ public final class EmbeddedServerFactory {
 
         boolean hostSupportsAuthentication = hostServer.services().profileRepository() != null;
         boolean onlineMode = readHostServerBooleanProperty(hostServer, "online-mode", hostSupportsAuthentication);
-        boolean enforceSecureProfile = readHostServerBooleanProperty(hostServer, "enforce-secure-profile", onlineMode);
+        // Default to non-enforced secure profile unless explicitly configured on host.
+        boolean enforceSecureProfile = readHostServerBooleanProperty(hostServer, "enforce-secure-profile", false);
         boolean acceptsTransfers = true;
 
         properties.setProperty("level-name", definition.worldName());
@@ -168,18 +170,13 @@ public final class EmbeddedServerFactory {
             boolean fallbackValue) {
         Path hostWorldRoot;
         try {
-            hostWorldRoot = hostServer.getWorldPath(LevelResource.ROOT);
+            hostWorldRoot = hostServer.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize();
         } catch (Exception exception) {
             return fallbackValue;
         }
 
-        Path hostPropertiesPath = hostWorldRoot.getParent();
-        if (hostPropertiesPath == null) {
-            return fallbackValue;
-        }
-        hostPropertiesPath = hostPropertiesPath.resolve("server.properties");
-
-        if (!Files.exists(hostPropertiesPath)) {
+        Path hostPropertiesPath = resolveHostServerPropertiesPath(hostWorldRoot);
+        if (hostPropertiesPath == null || !Files.exists(hostPropertiesPath)) {
             return fallbackValue;
         }
 
@@ -191,6 +188,33 @@ public final class EmbeddedServerFactory {
         }
 
         return Boolean.parseBoolean(properties.getProperty(key, Boolean.toString(fallbackValue)));
+    }
+
+    private static Path resolveHostServerPropertiesPath(Path hostWorldRoot) {
+        if (hostWorldRoot == null) {
+            return null;
+        }
+
+        ArrayList<Path> candidates = new ArrayList<>(4);
+        candidates.add(hostWorldRoot.resolve("server.properties"));
+
+        Path parent = hostWorldRoot.getParent();
+        if (parent != null) {
+            candidates.add(parent.resolve("server.properties"));
+
+            Path grandParent = parent.getParent();
+            if (grandParent != null) {
+                candidates.add(grandParent.resolve("server.properties"));
+            }
+        }
+
+        for (Path candidate : candidates) {
+            if (candidate != null && Files.exists(candidate)) {
+                return candidate;
+            }
+        }
+
+        return null;
     }
 
     private static Services resolveServices(MinecraftServer hostServer) {

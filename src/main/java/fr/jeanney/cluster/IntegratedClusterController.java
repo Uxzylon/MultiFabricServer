@@ -1,12 +1,25 @@
 package fr.jeanney.cluster;
 
+import com.mojang.authlib.GameProfile;
 import fr.jeanney.MultiFabricServer;
 import fr.jeanney.cluster.network.ProxyConnectPayload;
+import io.netty.buffer.Unpooled;
+import net.minecraft.ChatFormatting;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.network.chat.ComponentSerialization;
+import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.network.codec.ByteBufCodecs;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket;
+import net.minecraft.network.protocol.game.ClientboundPlayerInfoRemovePacket;
+import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket;
 import net.minecraft.gametest.framework.GameTestServer;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.permissions.Permission;
+import net.minecraft.server.permissions.PermissionLevel;
 import net.minecraft.world.level.storage.LevelResource;
 
 import java.io.IOException;
@@ -16,6 +29,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Collection;
+import java.util.EnumSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
@@ -33,6 +47,14 @@ public final class IntegratedClusterController {
 
     private static final long SEAMLESS_NODE_READY_TIMEOUT_MILLIS = 5000L;
     private static final long SEAMLESS_NODE_READY_POLL_MILLIS = 50L;
+    private static final long INTERNAL_TRAVEL_MARKER_TTL_MILLIS = TimeUnit.SECONDS.toMillis(20);
+    @SuppressWarnings("null")
+    private static final Permission OP_FEEDBACK_PERMISSION = new Permission.HasCommandLevel(
+            PermissionLevel.GAMEMASTERS);
+    private static final EnumSet<ClientboundPlayerInfoUpdatePacket.Action> REMOTE_TAB_ADD_ACTIONS = EnumSet.of(
+            ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER,
+            ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LISTED,
+            ClientboundPlayerInfoUpdatePacket.Action.UPDATE_DISPLAY_NAME);
 
     private final Map<String, ClusterNodeRuntime> runtimes = new LinkedHashMap<>();
     private final Set<String> activeNodeIds = new LinkedHashSet<>();
@@ -40,6 +62,8 @@ public final class IntegratedClusterController {
     private final Set<String> forceHostRoutePlayerUuids = new LinkedHashSet<>();
     private final Map<String, ClusterPlayerPresence> sharedPlayerPresences = new LinkedHashMap<>();
     private final Map<String, MinecraftServer> runtimeServerInstances = new LinkedHashMap<>();
+    private final Map<String, Map<String, String>> viewerRemoteTabEntrySignatures = new LinkedHashMap<>();
+    private final Map<String, InternalTravelMarker> pendingInternalTravelMarkersByPlayer = new LinkedHashMap<>();
 
     private boolean initialized;
     private boolean configEnabled;
@@ -54,6 +78,8 @@ public final class IntegratedClusterController {
     private boolean seamlessProxySwitchEnabled;
     private String proxyHostServerName = "host";
     private ClusterConfig configSnapshot = ClusterConfig.defaultConfig();
+
+    private static final int TAB_REFRESH_DEFERRED_EXECUTIONS = 2;
 
     public void onServerStarted(MinecraftServer server) {
         if (isClusterChildServer(server)) {
@@ -191,6 +217,8 @@ public final class IntegratedClusterController {
             stopping = false;
             sharedPlayerPresences.clear();
             runtimeServerInstances.clear();
+            viewerRemoteTabEntrySignatures.clear();
+            pendingInternalTravelMarkersByPlayer.clear();
             ownerServer = null;
             MultiFabricServer.LOGGER.info("[cluster-stop-debug] owner cleared after host fully stopped");
         }
@@ -249,6 +277,7 @@ public final class IntegratedClusterController {
                 runtimes.size());
 
         persistRuntimeState(server);
+        refreshSharedTabLists();
 
         return runtimes.size();
     }
@@ -485,14 +514,24 @@ public final class IntegratedClusterController {
 
     public synchronized void onPlayerJoin(MinecraftServer server, ServerPlayer player) {
         String playerUuid = player.getUUID().toString();
+        String playerName = player.getScoreboardName();
+        String nodeIdForServer = nodeIdForServer(server);
+
+        boolean suppressJoinMessage = consumePendingInternalTravelMarker(playerUuid, nodeIdForServer);
         forceHostRoutePlayerUuids.remove(playerUuid);
 
-        String nodeIdForServer = nodeIdForServer(server);
         if (nodeIdForServer != null) {
             runtimeServerInstances.put(nodeIdForServer, server);
         }
         sharedPlayerPresences.put(playerUuid,
-                new ClusterPlayerPresence(playerUuid, player.getScoreboardName(), nodeIdForServer));
+                new ClusterPlayerPresence(playerUuid, playerName, nodeIdForServer));
+        refreshSharedTabLists();
+        scheduleDeferredSharedTabRefresh(server);
+
+        if (configEnabled && !suppressJoinMessage) {
+            broadcastSharedLifecycleMessage(
+                    Component.literal(playerName + " joined the game").withStyle(ChatFormatting.YELLOW));
+        }
 
         if (nodeIdForServer != null) {
             rememberPlayerCluster(server, player, nodeIdForServer);
@@ -515,6 +554,16 @@ public final class IntegratedClusterController {
             return;
         }
 
+        if (seamlessProxySwitchEnabled) {
+            if (!requestSeamlessProxyTravel(server, player, targetNodeId)) {
+                MultiFabricServer.LOGGER.warn(
+                        "Seamless proxy restore failed for player {} to node {}",
+                        playerName,
+                        targetNodeId);
+            }
+            return;
+        }
+
         if (runtime.state() != ClusterNodeState.RUNNING) {
             runtime.start(server, clusterRuntimeRoot);
             if (runtime.state() == ClusterNodeState.RUNNING) {
@@ -525,38 +574,39 @@ public final class IntegratedClusterController {
 
         if (runtime.state() != ClusterNodeState.RUNNING) {
             MultiFabricServer.LOGGER.warn("Failed to restore player {} to cluster {} because the node is not running",
-                    player.getScoreboardName(),
+                    playerName,
                     targetNodeId);
             return;
         }
 
         String transferHost = gatewayEnabled ? hostTransferHost : runtime.definition().transferHost();
         int transferPort = gatewayEnabled ? gatewayBindPort : runtime.definition().transferPort();
-        String proxyServerName = resolveProxyServerName(runtime.definition());
-        server.execute(() -> {
-            if (seamlessProxySwitchEnabled) {
-                if (!executeSeamlessProxyTravel(server, player, targetNodeId, proxyServerName, false)) {
-                    MultiFabricServer.LOGGER.warn(
-                            "Seamless proxy restore failed for player {} to node {}",
-                            player.getScoreboardName(),
-                            targetNodeId);
-                }
-                return;
-            }
-            executeTransfer(server, player, transferHost, transferPort, targetNodeId);
-        });
+        server.execute(() -> executeTransfer(server, player, transferHost, transferPort, targetNodeId));
     }
 
     public synchronized void onPlayerDisconnect(MinecraftServer server, ServerPlayer player) {
-        handlePlayerDisconnect(server, player.getUUID().toString(), player.getScoreboardName(),
-                nodeIdForServer(server));
-        sharedPlayerPresences.remove(player.getUUID().toString());
+        String playerUuid = player.getUUID().toString();
+        String nodeId = nodeIdForServer(server);
+        boolean suppressDisconnectMessage = hasPendingInternalTravelMarker(playerUuid);
+
+        handlePlayerDisconnect(server, playerUuid, player.getScoreboardName(), nodeId);
+        sharedPlayerPresences.remove(playerUuid);
+        refreshSharedTabLists();
+        scheduleDeferredSharedTabRefresh(server);
+
+        if (configEnabled && !suppressDisconnectMessage) {
+            broadcastSharedLifecycleMessage(
+                    Component.literal(player.getScoreboardName() + " left the game")
+                            .withStyle(ChatFormatting.YELLOW));
+        }
     }
 
     public synchronized void onPlayerDisconnectFromNodeForTesting(MinecraftServer server, String playerUuid,
             String nodeId) {
         handlePlayerDisconnect(server, playerUuid, playerUuid, nodeId);
         sharedPlayerPresences.remove(playerUuid);
+        refreshSharedTabLists();
+        scheduleDeferredSharedTabRefresh(server);
     }
 
     public synchronized int sharedOnlinePlayersCount() {
@@ -565,6 +615,43 @@ public final class IntegratedClusterController {
 
     public synchronized Collection<ClusterPlayerPresence> sharedOnlinePlayers() {
         return ListSnapshot.copy(sharedPlayerPresences.values());
+    }
+
+    public synchronized void upsertSharedPlayerPresenceForTesting(String playerUuid, String playerName,
+            String nodeId) {
+        if (playerUuid == null || playerUuid.isBlank()) {
+            return;
+        }
+
+        String effectiveName = (playerName == null || playerName.isBlank()) ? playerUuid : playerName;
+        String effectiveNodeId = (nodeId == null || nodeId.isBlank()) ? null : nodeId;
+        sharedPlayerPresences.put(playerUuid,
+                new ClusterPlayerPresence(playerUuid, effectiveName, effectiveNodeId));
+        refreshSharedTabLists();
+    }
+
+    public synchronized void removeSharedPlayerPresenceForTesting(String playerUuid) {
+        if (playerUuid == null || playerUuid.isBlank()) {
+            return;
+        }
+        sharedPlayerPresences.remove(playerUuid);
+        refreshSharedTabLists();
+    }
+
+    public synchronized Collection<ClusterPlayerPresence> remotePlayersForViewerForTesting(String viewerUuid,
+            String viewerNodeId) {
+        String viewerClusterLabel = clusterLabelForNodeId(viewerNodeId);
+        Map<String, ClusterPlayerPresence> desiredRemote = desiredRemotePresences(sharedPlayerPresences,
+                viewerUuid,
+                viewerClusterLabel);
+        return ListSnapshot.copy(desiredRemote.values());
+    }
+
+    public static Component buildRemoteTabDisplayName(String playerName, String clusterLabel) {
+        String effectiveName = (playerName == null || playerName.isBlank()) ? "unknown" : playerName;
+        String effectiveCluster = clusterLabelForNodeId(clusterLabel);
+        return Component.literal(effectiveName + " (" + effectiveCluster + ")")
+                .withStyle(ChatFormatting.GRAY);
     }
 
     public synchronized Optional<String> playerClusterAffinity(String playerUuid) {
@@ -634,6 +721,57 @@ public final class IntegratedClusterController {
         return proxyHostServerName;
     }
 
+    public synchronized boolean allowGameMessage(MinecraftServer server, Component message, boolean overlay) {
+        if (overlay || !initialized || !configEnabled) {
+            return true;
+        }
+
+        return !isVanillaJoinLeaveGameMessage(message);
+    }
+
+    public void relayAdvancementGameMessage(MinecraftServer sourceServer, Component message, boolean overlay) {
+        if (sourceServer == null || message == null || overlay) {
+            return;
+        }
+
+        String sourceCluster;
+        List<MinecraftServer> targets;
+        synchronized (this) {
+            if (!initialized || !configEnabled || ownerServer == null) {
+                return;
+            }
+
+            if (!isCrossClusterAdvancementGameMessage(message)) {
+                return;
+            }
+
+            sourceCluster = clusterLabelForNodeId(nodeIdForServer(sourceServer));
+            targets = relayTargets(sourceServer);
+        }
+
+        if (targets.isEmpty()) {
+            return;
+        }
+
+        MutableComponent relayedMessage = buildCrossClusterMessagePrefix(sourceCluster)
+                .append(message.copy());
+
+        for (MinecraftServer target : targets) {
+            if (target == null || target.isStopped()) {
+                continue;
+            }
+
+            target.execute(() -> {
+                for (ServerPlayer targetPlayer : target.getPlayerList().getPlayers()) {
+                    if (targetPlayer == null) {
+                        continue;
+                    }
+                    targetPlayer.sendSystemMessage(relayedMessage.copy());
+                }
+            });
+        }
+    }
+
     public synchronized String gatewayBindHost() {
         return gatewayBindHost;
     }
@@ -701,9 +839,8 @@ public final class IntegratedClusterController {
                 return;
             }
 
-            String nodeId = nodeIdForServer(sourceServer);
-            sourceCluster = (nodeId == null || nodeId.isBlank()) ? "host" : nodeId;
-            renderedLine = "[" + sourceCluster + "] <" + sender.getScoreboardName() + "> " + chatText;
+            sourceCluster = clusterLabelForNodeId(nodeIdForServer(sourceServer));
+            renderedLine = "<" + sender.getScoreboardName() + "> " + chatText;
             targets = relayTargets(sourceServer);
         }
 
@@ -711,13 +848,84 @@ public final class IntegratedClusterController {
             return;
         }
 
-        Component relayMessage = Component.literal(renderedLine);
+        MutableComponent relayMessage = buildCrossClusterMessagePrefix(sourceCluster)
+                .append(Component.literal(renderedLine));
 
         for (MinecraftServer target : targets) {
             if (target == null || target.isStopped()) {
                 continue;
             }
             target.execute(() -> target.getPlayerList().broadcastSystemMessage(relayMessage, false));
+        }
+    }
+
+    public void relayCommandFeedback(MinecraftServer sourceServer, ServerPlayer sourcePlayer, Component feedback) {
+        if (sourceServer == null || sourcePlayer == null || feedback == null) {
+            return;
+        }
+
+        String sourceCluster;
+        List<MinecraftServer> targets;
+        synchronized (this) {
+            if (!initialized || !configEnabled || ownerServer == null) {
+                return;
+            }
+
+            sourceCluster = clusterLabelForNodeId(nodeIdForServer(sourceServer));
+            targets = relayTargets(sourceServer);
+        }
+
+        if (targets.isEmpty()) {
+            return;
+        }
+
+        Component adminFeedback = Component
+                .translatable("chat.type.admin", sourcePlayer.getDisplayName(), feedback.copy())
+                .withStyle(ChatFormatting.GRAY, ChatFormatting.ITALIC);
+        MutableComponent relayedMessage = buildCrossClusterMessagePrefix(sourceCluster)
+                .append(adminFeedback);
+
+        for (MinecraftServer target : targets) {
+            if (target == null || target.isStopped()) {
+                continue;
+            }
+
+            target.execute(() -> {
+                for (ServerPlayer targetPlayer : target.getPlayerList().getPlayers()) {
+                    if (targetPlayer == null || !hasOpFeedbackPermission(targetPlayer)) {
+                        continue;
+                    }
+                    targetPlayer.sendSystemMessage(relayedMessage.copy());
+                }
+            });
+        }
+    }
+
+    @SuppressWarnings("null")
+    private static boolean hasOpFeedbackPermission(ServerPlayer player) {
+        if (player == null) {
+            return false;
+        }
+        return player.createCommandSourceStack().permissions().hasPermission(OP_FEEDBACK_PERMISSION);
+    }
+
+    private static MutableComponent buildCrossClusterMessagePrefix(String clusterLabel) {
+        MutableComponent root = Component.empty();
+        root.append(Component.literal("[" + clusterLabelForNodeId(clusterLabel) + "] ")
+                .withStyle(ChatFormatting.GRAY));
+        return root;
+    }
+
+    private void broadcastSharedLifecycleMessage(Component message) {
+        if (message == null) {
+            return;
+        }
+
+        for (MinecraftServer target : allServersWithPossibleViewers()) {
+            if (target == null || target.isStopped()) {
+                continue;
+            }
+            target.execute(() -> target.getPlayerList().broadcastSystemMessage(message, false));
         }
     }
 
@@ -764,6 +972,239 @@ public final class IntegratedClusterController {
         }
 
         return targets;
+    }
+
+    private synchronized void refreshSharedTabLists() {
+        if (!initialized || ownerServer == null) {
+            viewerRemoteTabEntrySignatures.clear();
+            return;
+        }
+
+        Map<String, ClusterPlayerPresence> presenceSnapshot = new LinkedHashMap<>(sharedPlayerPresences);
+        Set<String> activeViewerUuids = new LinkedHashSet<>();
+
+        for (MinecraftServer server : allServersWithPossibleViewers()) {
+            if (server == null || server.isStopped()) {
+                continue;
+            }
+
+            String viewerClusterLabel = clusterLabelForNodeId(nodeIdForServer(server));
+            List<ServerPlayer> viewers = server.getPlayerList().getPlayers();
+            for (ServerPlayer viewer : viewers) {
+                if (viewer == null || viewer.connection == null) {
+                    continue;
+                }
+
+                String viewerUuid = viewer.getUUID().toString();
+                activeViewerUuids.add(viewerUuid);
+
+                Map<String, ClusterPlayerPresence> desiredRemotePresences = desiredRemotePresences(
+                        presenceSnapshot,
+                        viewerUuid,
+                        viewerClusterLabel);
+                Map<String, String> desiredSignatures = remoteSignatures(desiredRemotePresences);
+
+                Map<String, String> currentSignatures = viewerRemoteTabEntrySignatures.computeIfAbsent(
+                        viewerUuid,
+                        ignored -> new LinkedHashMap<>());
+
+                List<UUID> removals = new ArrayList<>();
+                for (Map.Entry<String, String> currentEntry : currentSignatures.entrySet()) {
+                    String desiredSignature = desiredSignatures.get(currentEntry.getKey());
+                    if (desiredSignature != null && desiredSignature.equals(currentEntry.getValue())) {
+                        continue;
+                    }
+
+                    try {
+                        removals.add(UUID.fromString(currentEntry.getKey()));
+                    } catch (IllegalArgumentException ignored) {
+                        // Ignore malformed UUID keys in stale state and just drop them from tracking.
+                    }
+                }
+
+                if (!removals.isEmpty()) {
+                    viewer.connection.send(new ClientboundPlayerInfoRemovePacket(removals));
+                }
+
+                for (Map.Entry<String, ClusterPlayerPresence> desiredEntry : desiredRemotePresences.entrySet()) {
+                    String desiredSignature = desiredSignatures.get(desiredEntry.getKey());
+                    String existingSignature = currentSignatures.get(desiredEntry.getKey());
+                    if (desiredSignature != null && desiredSignature.equals(existingSignature)) {
+                        continue;
+                    }
+
+                    ClientboundPlayerInfoUpdatePacket updatePacket = createRemoteTabAddPacket(server,
+                            desiredEntry.getValue());
+                    if (updatePacket != null) {
+                        viewer.connection.send(updatePacket);
+                    }
+                }
+
+                currentSignatures.clear();
+                currentSignatures.putAll(desiredSignatures);
+            }
+        }
+
+        viewerRemoteTabEntrySignatures.keySet().removeIf(
+                trackedViewerUuid -> !activeViewerUuids.contains(trackedViewerUuid));
+    }
+
+    @SuppressWarnings("null")
+    private void scheduleDeferredSharedTabRefresh(MinecraftServer schedulerServer) {
+        if (schedulerServer == null || schedulerServer.isStopped()) {
+            return;
+        }
+
+        Runnable refreshTask = () -> {
+            synchronized (this) {
+                refreshSharedTabLists();
+            }
+        };
+
+        Runnable chain = refreshTask;
+        for (int i = 0; i < TAB_REFRESH_DEFERRED_EXECUTIONS; i++) {
+            Runnable next = chain;
+            chain = () -> schedulerServer.execute(next);
+        }
+
+        schedulerServer.execute(chain);
+    }
+
+    private List<MinecraftServer> allServersWithPossibleViewers() {
+        Set<MinecraftServer> unique = Collections.newSetFromMap(new IdentityHashMap<>());
+        List<MinecraftServer> servers = new ArrayList<>();
+
+        if (ownerServer != null && unique.add(ownerServer)) {
+            servers.add(ownerServer);
+        }
+
+        for (MinecraftServer runtimeServer : runtimeServerInstances.values()) {
+            if (runtimeServer == null) {
+                continue;
+            }
+            if (unique.add(runtimeServer)) {
+                servers.add(runtimeServer);
+            }
+        }
+
+        return servers;
+    }
+
+    private static Map<String, ClusterPlayerPresence> desiredRemotePresences(
+            Map<String, ClusterPlayerPresence> presences,
+            String viewerUuid,
+            String viewerClusterLabel) {
+        Map<String, ClusterPlayerPresence> desired = new LinkedHashMap<>();
+        for (ClusterPlayerPresence presence : presences.values()) {
+            if (presence == null) {
+                continue;
+            }
+
+            String remoteUuid = presence.playerUuid();
+            if (remoteUuid == null || remoteUuid.isBlank()) {
+                continue;
+            }
+
+            if (remoteUuid.equals(viewerUuid)) {
+                continue;
+            }
+
+            if (clusterLabelForNodeId(presence.nodeId()).equals(viewerClusterLabel)) {
+                continue;
+            }
+
+            desired.put(remoteUuid, presence);
+        }
+
+        return desired;
+    }
+
+    private static Map<String, String> remoteSignatures(Map<String, ClusterPlayerPresence> remotePresences) {
+        Map<String, String> signatures = new LinkedHashMap<>();
+        for (Map.Entry<String, ClusterPlayerPresence> entry : remotePresences.entrySet()) {
+            ClusterPlayerPresence presence = entry.getValue();
+            signatures.put(entry.getKey(),
+                    presence.playerName() + "|" + clusterLabelForNodeId(presence.nodeId()));
+        }
+        return signatures;
+    }
+
+    @SuppressWarnings("null")
+    private ClientboundPlayerInfoUpdatePacket createRemoteTabAddPacket(MinecraftServer server,
+            ClusterPlayerPresence presence) {
+        if (server == null || presence == null) {
+            return null;
+        }
+
+        UUID profileId;
+        try {
+            profileId = UUID.fromString(presence.playerUuid());
+        } catch (Exception exception) {
+            return null;
+        }
+
+        String playerName = presence.playerName();
+        if (playerName == null || playerName.isBlank()) {
+            String compactUuid = profileId.toString().replace("-", "");
+            playerName = compactUuid.substring(0, Math.min(16, compactUuid.length()));
+        }
+
+        RegistryFriendlyByteBuf buffer = new RegistryFriendlyByteBuf(Unpooled.buffer(), server.registryAccess());
+        buffer.writeEnumSet(REMOTE_TAB_ADD_ACTIONS, ClientboundPlayerInfoUpdatePacket.Action.class);
+        buffer.writeVarInt(1);
+        buffer.writeUUID(profileId);
+
+        GameProfile profile = new GameProfile(profileId, playerName);
+        ByteBufCodecs.PLAYER_NAME.encode(buffer, profile.name());
+        ByteBufCodecs.GAME_PROFILE_PROPERTIES.encode(buffer, profile.properties());
+        buffer.writeBoolean(true);
+        FriendlyByteBuf.writeNullable(
+                buffer,
+                buildRemoteTabDisplayName(playerName, presence.clusterLabel()),
+                ComponentSerialization.TRUSTED_STREAM_CODEC);
+
+        return ClientboundPlayerInfoUpdatePacket.STREAM_CODEC.decode(buffer);
+    }
+
+    private static String clusterLabelForNodeId(String nodeId) {
+        if (nodeId == null || nodeId.isBlank()) {
+            return "host";
+        }
+        return nodeId;
+    }
+
+    private static boolean isVanillaJoinLeaveGameMessage(Component message) {
+        if (message == null) {
+            return false;
+        }
+
+        if (!(message.getContents() instanceof TranslatableContents translatableContents)) {
+            return false;
+        }
+
+        String key = translatableContents.getKey();
+        if (key == null || key.isBlank()) {
+            return false;
+        }
+
+        return key.startsWith("multiplayer.player.joined") || "multiplayer.player.left".equals(key);
+    }
+
+    private static boolean isCrossClusterAdvancementGameMessage(Component message) {
+        if (message == null) {
+            return false;
+        }
+
+        if (!(message.getContents() instanceof TranslatableContents translatableContents)) {
+            return false;
+        }
+
+        String key = translatableContents.getKey();
+        if (key == null || key.isBlank()) {
+            return false;
+        }
+
+        return key.startsWith("chat.type.advancement.");
     }
 
     public boolean shouldShortCircuitChildStopServer(MinecraftServer server) {
@@ -814,6 +1255,8 @@ public final class IntegratedClusterController {
             return false;
         }
 
+        MinecraftServer controlServer = resolveControlServer(server);
+
         if (gatewayEnabled) {
             MultiFabricServer.LOGGER.warn(
                     "Seamless proxy switch requires an external proxy. Disable gatewayEnabled before using seamlessProxySwitchEnabled.");
@@ -846,10 +1289,11 @@ public final class IntegratedClusterController {
         }
 
         if (runtime.state() != ClusterNodeState.RUNNING) {
-            runtime.start(server, clusterRuntimeRoot);
+            MinecraftServer startupHost = controlServer != null ? controlServer : server;
+            runtime.start(startupHost, clusterRuntimeRoot);
             if (runtime.state() == ClusterNodeState.RUNNING) {
                 activeNodeIds.add(targetNodeId);
-                persistRuntimeState(server);
+                persistRuntimeState(startupHost);
             }
         }
 
@@ -963,6 +1407,7 @@ public final class IntegratedClusterController {
         }
 
         try {
+            markPendingInternalTravel(player.getUUID().toString(), hostTarget ? null : targetNodeId);
             player.connection
                     .send(new ClientboundCustomPayloadPacket(new ProxyConnectPayload(effectiveProxyServerName)));
             if (!hostTarget) {
@@ -970,6 +1415,7 @@ public final class IntegratedClusterController {
             }
             return true;
         } catch (Exception exception) {
+            clearPendingInternalTravelMarker(player.getUUID().toString());
             MultiFabricServer.LOGGER.error("Failed seamless proxy switch for player {} to {} (node={})",
                     player.getScoreboardName(),
                     effectiveProxyServerName,
@@ -1010,10 +1456,13 @@ public final class IntegratedClusterController {
     private void executeTransfer(MinecraftServer server, ServerPlayer player, String host, int port,
             String targetNodeId) {
         String transferCommand = "transfer " + host + " " + port;
+        String playerUuid = player.getUUID().toString();
+        markPendingInternalTravel(playerUuid, targetNodeId);
         try {
             int result = server.getCommands().getDispatcher().execute(transferCommand,
                     player.createCommandSourceStack());
             if (result <= 0) {
+                clearPendingInternalTravelMarker(playerUuid);
                 MultiFabricServer.LOGGER.warn("Transfer command did not execute for player {} to {}:{}",
                         player.getScoreboardName(),
                         host,
@@ -1022,6 +1471,7 @@ public final class IntegratedClusterController {
                 rememberPlayerCluster(server, player, targetNodeId);
             }
         } catch (Exception exception) {
+            clearPendingInternalTravelMarker(playerUuid);
             MultiFabricServer.LOGGER.error("Failed to transfer player {} to cluster {} via {}:{}",
                     player.getScoreboardName(),
                     targetNodeId,
@@ -1075,6 +1525,61 @@ public final class IntegratedClusterController {
         rememberPlayerCluster(server, playerUuid, nodeId);
     }
 
+    private synchronized void markPendingInternalTravel(String playerUuid, String targetNodeId) {
+        if (playerUuid == null || playerUuid.isBlank()) {
+            return;
+        }
+
+        pruneExpiredInternalTravelMarkers();
+        long expiresAt = System.currentTimeMillis() + INTERNAL_TRAVEL_MARKER_TTL_MILLIS;
+        pendingInternalTravelMarkersByPlayer.put(
+                playerUuid,
+                new InternalTravelMarker(clusterLabelForNodeId(targetNodeId), expiresAt));
+    }
+
+    private synchronized boolean hasPendingInternalTravelMarker(String playerUuid) {
+        if (playerUuid == null || playerUuid.isBlank()) {
+            return false;
+        }
+
+        pruneExpiredInternalTravelMarkers();
+        return pendingInternalTravelMarkersByPlayer.containsKey(playerUuid);
+    }
+
+    private synchronized boolean consumePendingInternalTravelMarker(String playerUuid, String currentNodeId) {
+        if (playerUuid == null || playerUuid.isBlank()) {
+            return false;
+        }
+
+        pruneExpiredInternalTravelMarkers();
+
+        InternalTravelMarker marker = pendingInternalTravelMarkersByPlayer.get(playerUuid);
+        if (marker == null) {
+            return false;
+        }
+
+        String currentClusterLabel = clusterLabelForNodeId(currentNodeId);
+        if (!marker.expectedClusterLabel().equals(currentClusterLabel)) {
+            return false;
+        }
+
+        pendingInternalTravelMarkersByPlayer.remove(playerUuid);
+        return true;
+    }
+
+    private synchronized void clearPendingInternalTravelMarker(String playerUuid) {
+        if (playerUuid == null || playerUuid.isBlank()) {
+            return;
+        }
+
+        pendingInternalTravelMarkersByPlayer.remove(playerUuid);
+    }
+
+    private synchronized void pruneExpiredInternalTravelMarkers() {
+        long now = System.currentTimeMillis();
+        pendingInternalTravelMarkersByPlayer.entrySet().removeIf(entry -> entry.getValue().expiresAtMillis() <= now);
+    }
+
     private void persistRuntimeState(MinecraftServer fallbackServer) {
         MinecraftServer persistenceServer = ownerServer != null ? ownerServer : fallbackServer;
         if (persistenceServer == null) {
@@ -1097,5 +1602,8 @@ public final class IntegratedClusterController {
     }
 
     public record GatewayRoute(String backendHost, int backendPort, String nodeId) {
+    }
+
+    private record InternalTravelMarker(String expectedClusterLabel, long expiresAtMillis) {
     }
 }

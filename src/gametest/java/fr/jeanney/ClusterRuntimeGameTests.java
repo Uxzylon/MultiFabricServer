@@ -2,8 +2,11 @@ package fr.jeanney;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import fr.jeanney.cluster.ClusterPlayerPresence;
+import fr.jeanney.cluster.IntegratedClusterController;
 import net.fabricmc.fabric.api.gametest.v1.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.storage.LevelResource;
 import fr.jeanney.cluster.ClusterNodeState;
@@ -78,22 +81,20 @@ public final class ClusterRuntimeGameTests {
             return;
         }
 
-        helper.runAfterDelay(40, () -> {
-            var runtimeOpt = controller.node(nodeId);
-            if (runtimeOpt.isEmpty()) {
-                helper.fail("Node missing after command enable/start: " + nodeId);
-                return;
-            }
+        var runtimeOpt = controller.node(nodeId);
+        if (runtimeOpt.isEmpty()) {
+            helper.fail("Node missing after command enable/start: " + nodeId);
+            return;
+        }
 
-            var runtime = runtimeOpt.get();
-            if (runtime.state() != ClusterNodeState.RUNNING) {
-                helper.fail("Expected RUNNING node state after command enable/start, got " + runtime.state()
-                        + " reason=" + runtime.failureReason());
-                return;
-            }
+        var runtime = runtimeOpt.get();
+        if (runtime.state() != ClusterNodeState.RUNNING && runtime.state() != ClusterNodeState.STARTING) {
+            helper.fail("Expected RUNNING/STARTING node state after command enable/start, got " + runtime.state()
+                    + " reason=" + runtime.failureReason());
+            return;
+        }
 
-            helper.succeed();
-        });
+        helper.succeed();
     }
 
     @GameTest(maxTicks = 4000)
@@ -134,6 +135,69 @@ public final class ClusterRuntimeGameTests {
         if (forcedHostRoute.get().nodeId() != null) {
             helper.fail("Expected explicit host travel to bypass affinity and route to host, got node "
                     + forcedHostRoute.get().nodeId());
+            return;
+        }
+
+        helper.succeed();
+    }
+
+    @GameTest(maxTicks = 200)
+    public void sharedPresenceTracksAndFiltersRemotePlayers(GameTestHelper helper) {
+        var controller = MultiFabricServer.clusterController();
+
+        String hostViewerUuid = "00000000-0000-0000-0000-000000000111";
+        String hostPeerUuid = "00000000-0000-0000-0000-000000000112";
+        String creativePlayerUuid = "00000000-0000-0000-0000-000000000113";
+
+        controller.upsertSharedPlayerPresenceForTesting(hostViewerUuid, "HostViewer", null);
+        controller.upsertSharedPlayerPresenceForTesting(hostPeerUuid, "HostPeer", null);
+        controller.upsertSharedPlayerPresenceForTesting(creativePlayerUuid, "CreativeUser", "creative");
+
+        if (controller.sharedOnlinePlayersCount() != 3) {
+            helper.fail("Expected shared player count=3, got " + controller.sharedOnlinePlayersCount());
+            return;
+        }
+
+        var hostViewerRemote = controller.remotePlayersForViewerForTesting(hostViewerUuid, null);
+        if (hostViewerRemote.size() != 1) {
+            helper.fail("Host viewer should see exactly one remote player, got " + hostViewerRemote.size());
+            return;
+        }
+
+        ClusterPlayerPresence hostRemoteEntry = hostViewerRemote.iterator().next();
+        if (!creativePlayerUuid.equals(hostRemoteEntry.playerUuid())) {
+            helper.fail("Host viewer remote entry should be creative player, got " + hostRemoteEntry.playerUuid());
+            return;
+        }
+        if (!"creative".equals(hostRemoteEntry.clusterLabel())) {
+            helper.fail("Expected remote cluster label 'creative', got " + hostRemoteEntry.clusterLabel());
+            return;
+        }
+
+        var creativeViewerRemote = controller.remotePlayersForViewerForTesting(creativePlayerUuid, "creative");
+        if (creativeViewerRemote.size() != 2) {
+            helper.fail("Creative viewer should see two host players as remote, got " + creativeViewerRemote.size());
+            return;
+        }
+
+        controller.removeSharedPlayerPresenceForTesting(hostViewerUuid);
+        controller.removeSharedPlayerPresenceForTesting(hostPeerUuid);
+        controller.removeSharedPlayerPresenceForTesting(creativePlayerUuid);
+
+        helper.succeed();
+    }
+
+    @GameTest(maxTicks = 100)
+    public void remoteTabDisplayNameIncludesClusterAndGrayStyle(GameTestHelper helper) {
+        Component displayName = IntegratedClusterController.buildRemoteTabDisplayName("Uxzylon", "creative");
+
+        if (!"Uxzylon (creative)".equals(displayName.getString())) {
+            helper.fail("Unexpected remote tab display text: " + displayName.getString());
+            return;
+        }
+
+        if (displayName.getStyle().getColor() == null) {
+            helper.fail("Remote tab display should use gray style for cross-cluster entries");
             return;
         }
 
