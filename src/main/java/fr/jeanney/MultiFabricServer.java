@@ -59,6 +59,9 @@ public final class MultiFabricServer implements ModInitializer {
                         server,
                         message,
                         overlay));
+        ServerMessageEvents.COMMAND_MESSAGE.register((message, source, params) -> {
+            CLUSTER_CONTROLLER.relayConsoleCommandMessage(source.getServer(), message.decoratedContent());
+        });
         ServerMessageEvents.CHAT_MESSAGE.register((message, sender, params) -> {
             CLUSTER_CONTROLLER.relayChatMessage(sender.level().getServer(), sender,
                     message.decoratedContent().getString());

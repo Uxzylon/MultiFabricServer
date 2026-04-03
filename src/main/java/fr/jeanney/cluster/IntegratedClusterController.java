@@ -41,6 +41,7 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 public final class IntegratedClusterController {
@@ -172,9 +173,18 @@ public final class IntegratedClusterController {
                 return;
             }
 
+            disconnectPlayersFromHostServer(server, Component.literal("Server is shutting down"));
+            disconnectPlayersFromRunningNodes(Component.literal("Server is shutting down"));
             activeNodeIds.clear();
             activeNodeIds.addAll(currentlyRunningNodeIds());
+            sharedPlayerPresences.entrySet().removeIf(entry -> {
+                String nodeId = entry.getValue().nodeId();
+                return nodeId != null && !nodeId.isBlank();
+            });
+            viewerRemoteTabEntrySignatures.clear();
+            pendingInternalTravelMarkersByPlayer.clear();
             persistRuntimeState(server);
+            refreshSharedTabLists();
 
             MultiFabricServer.LOGGER.info("[cluster-stop-debug] deferring node shutdown to onServerStopped for host {}",
                     describeServer(server));
@@ -319,6 +329,10 @@ public final class IntegratedClusterController {
     public synchronized boolean startNode(MinecraftServer hostServer, String nodeId) {
         MinecraftServer effectiveHostServer = resolveControlServer(hostServer);
         if (effectiveHostServer == null) {
+            return false;
+        }
+
+        if (stopping) {
             return false;
         }
 
@@ -517,6 +531,10 @@ public final class IntegratedClusterController {
         String playerName = player.getScoreboardName();
         String nodeIdForServer = nodeIdForServer(server);
 
+        if (stopping) {
+            return;
+        }
+
         boolean suppressJoinMessage = consumePendingInternalTravelMarker(playerUuid, nodeIdForServer);
         forceHostRoutePlayerUuids.remove(playerUuid);
 
@@ -587,6 +605,11 @@ public final class IntegratedClusterController {
     public synchronized void onPlayerDisconnect(MinecraftServer server, ServerPlayer player) {
         String playerUuid = player.getUUID().toString();
         String nodeId = nodeIdForServer(server);
+
+        if (stopping) {
+            return;
+        }
+
         boolean suppressDisconnectMessage = hasPendingInternalTravelMarker(playerUuid);
 
         handlePlayerDisconnect(server, playerUuid, player.getScoreboardName(), nodeId);
@@ -859,6 +882,37 @@ public final class IntegratedClusterController {
         }
     }
 
+    public void relayConsoleCommandMessage(MinecraftServer sourceServer, Component message) {
+        if (sourceServer == null || message == null) {
+            return;
+        }
+
+        String sourceCluster;
+        List<MinecraftServer> targets;
+        synchronized (this) {
+            if (!initialized || !configEnabled || ownerServer == null) {
+                return;
+            }
+
+            sourceCluster = clusterLabelForNodeId(nodeIdForServer(sourceServer));
+            targets = relayTargets(sourceServer);
+        }
+
+        if (targets.isEmpty()) {
+            return;
+        }
+
+        MutableComponent relayedMessage = buildCrossClusterMessagePrefix(sourceCluster)
+                .append(message.copy());
+
+        for (MinecraftServer target : targets) {
+            if (target == null || target.isStopped()) {
+                continue;
+            }
+            target.execute(() -> target.getPlayerList().broadcastSystemMessage(relayedMessage, false));
+        }
+    }
+
     public void relayCommandFeedback(MinecraftServer sourceServer, ServerPlayer sourcePlayer, Component feedback) {
         if (sourceServer == null || sourcePlayer == null || feedback == null) {
             return;
@@ -930,6 +984,10 @@ public final class IntegratedClusterController {
     }
 
     private Optional<GatewayRoute> gatewayRouteForNode(String nodeId) {
+        if (stopping) {
+            return Optional.empty();
+        }
+
         ClusterNodeRuntime runtime = runtimes.get(nodeId);
         if (runtime == null || !runtime.definition().enabled()) {
             return Optional.empty();
@@ -1255,6 +1313,10 @@ public final class IntegratedClusterController {
             return false;
         }
 
+        if (stopping) {
+            return false;
+        }
+
         MinecraftServer controlServer = resolveControlServer(server);
 
         if (gatewayEnabled) {
@@ -1478,6 +1540,51 @@ public final class IntegratedClusterController {
                     host,
                     port,
                     exception);
+        }
+    }
+
+    private static void disconnectPlayersFromHostServer(MinecraftServer hostServer, Component disconnectReason) {
+        if (hostServer == null || hostServer.isStopped()) {
+            return;
+        }
+
+        Component reason = Objects.requireNonNull(disconnectReason, "disconnectReason");
+        for (ServerPlayer player : List.copyOf(hostServer.getPlayerList().getPlayers())) {
+            if (player == null || player.connection == null) {
+                continue;
+            }
+            player.connection.disconnect(reason);
+        }
+    }
+
+    private void disconnectPlayersFromRunningNodes(Component disconnectReason) {
+        Component reason = Objects.requireNonNull(disconnectReason, "disconnectReason");
+
+        for (MinecraftServer runtimeServer : runtimeServerInstances.values()) {
+            if (runtimeServer == null || runtimeServer.isStopped()) {
+                continue;
+            }
+
+            CountDownLatch latch = new CountDownLatch(1);
+            runtimeServer.execute(() -> {
+                try {
+                    for (ServerPlayer player : runtimeServer.getPlayerList().getPlayers()) {
+                        if (player == null || player.connection == null) {
+                            continue;
+                        }
+                        player.connection.disconnect(reason);
+                    }
+                } finally {
+                    latch.countDown();
+                }
+            });
+
+            try {
+                latch.await(500L, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException interruptedException) {
+                Thread.currentThread().interrupt();
+                return;
+            }
         }
     }
 
