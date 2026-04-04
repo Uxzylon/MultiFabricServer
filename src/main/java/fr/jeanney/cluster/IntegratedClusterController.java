@@ -67,6 +67,7 @@ public final class IntegratedClusterController {
     private final Map<String, Map<String, String>> viewerRemoteTabEntrySignatures = new LinkedHashMap<>();
     private final Map<String, InternalTravelMarker> pendingInternalTravelMarkersByPlayer = new LinkedHashMap<>();
     private final Map<String, ExternalLifecycleSuppressionMarker> pendingExternalLifecycleSuppressionsByPlayer = new LinkedHashMap<>();
+    private final Map<String, DynmapLogoutSuppressionMarker> pendingDynmapLogoutSuppressionsByPlayer = new LinkedHashMap<>();
 
     private boolean initialized;
     private boolean configEnabled;
@@ -186,6 +187,7 @@ public final class IntegratedClusterController {
             viewerRemoteTabEntrySignatures.clear();
             pendingInternalTravelMarkersByPlayer.clear();
             pendingExternalLifecycleSuppressionsByPlayer.clear();
+            pendingDynmapLogoutSuppressionsByPlayer.clear();
             persistRuntimeState(server);
             refreshSharedTabLists();
 
@@ -233,6 +235,7 @@ public final class IntegratedClusterController {
             viewerRemoteTabEntrySignatures.clear();
             pendingInternalTravelMarkersByPlayer.clear();
             pendingExternalLifecycleSuppressionsByPlayer.clear();
+            pendingDynmapLogoutSuppressionsByPlayer.clear();
             ownerServer = null;
             MultiFabricServer.LOGGER.info("[cluster-stop-debug] owner cleared after host fully stopped");
         }
@@ -259,6 +262,7 @@ public final class IntegratedClusterController {
         runtimeServerInstances.clear();
         pendingInternalTravelMarkersByPlayer.clear();
         pendingExternalLifecycleSuppressionsByPlayer.clear();
+        pendingDynmapLogoutSuppressionsByPlayer.clear();
 
         ClusterConfig config = ClusterConfigLoader.load(server);
         configEnabled = config.enabled();
@@ -740,6 +744,36 @@ public final class IntegratedClusterController {
 
     public synchronized boolean isGatewayEnabled() {
         return gatewayEnabled;
+    }
+
+    public synchronized List<ServerPlayer> dynmapOnlinePlayers(MinecraftServer hostServer) {
+        MinecraftServer effectiveHostServer = resolveControlServer(hostServer);
+        Map<UUID, ServerPlayer> playersByUuid = new LinkedHashMap<>();
+
+        addPlayersFromServer(playersByUuid, effectiveHostServer);
+        for (MinecraftServer runtimeServer : runtimeServerInstances.values()) {
+            addPlayersFromServer(playersByUuid, runtimeServer);
+        }
+
+        for (ClusterPlayerPresence presence : sharedPlayerPresences.values()) {
+            UUID playerUuid;
+            try {
+                playerUuid = UUID.fromString(presence.playerUuid());
+            } catch (Exception ignored) {
+                continue;
+            }
+
+            if (playersByUuid.containsKey(playerUuid)) {
+                continue;
+            }
+
+            ServerPlayer resolved = findPlayerAcrossKnownServers(playerUuid, effectiveHostServer);
+            if (resolved != null) {
+                playersByUuid.put(playerUuid, resolved);
+            }
+        }
+
+        return List.copyOf(playersByUuid.values());
     }
 
     public synchronized boolean isSeamlessProxySwitchEnabled() {
@@ -1475,7 +1509,8 @@ public final class IntegratedClusterController {
         }
 
         try {
-            markPendingInternalTravel(player.getUUID().toString(), hostTarget ? null : targetNodeId);
+            markPendingInternalTravel(player.getUUID().toString(), hostTarget ? null : targetNodeId,
+                    nodeIdForServer(server));
             player.connection
                     .send(new ClientboundCustomPayloadPacket(new ProxyConnectPayload(effectiveProxyServerName)));
             if (!hostTarget) {
@@ -1525,7 +1560,7 @@ public final class IntegratedClusterController {
             String targetNodeId) {
         String transferCommand = "transfer " + host + " " + port;
         String playerUuid = player.getUUID().toString();
-        markPendingInternalTravel(playerUuid, targetNodeId);
+        markPendingInternalTravel(playerUuid, targetNodeId, nodeIdForServer(server));
         try {
             int result = server.getCommands().getDispatcher().execute(transferCommand,
                     player.createCommandSourceStack());
@@ -1618,6 +1653,58 @@ public final class IntegratedClusterController {
         return null;
     }
 
+    private ServerPlayer findPlayerAcrossKnownServers(UUID playerUuid, MinecraftServer effectiveHostServer) {
+        if (playerUuid == null) {
+            return null;
+        }
+
+        ServerPlayer fromHost = findPlayerOnServer(playerUuid, effectiveHostServer);
+        if (fromHost != null) {
+            return fromHost;
+        }
+
+        for (MinecraftServer runtimeServer : runtimeServerInstances.values()) {
+            ServerPlayer runtimePlayer = findPlayerOnServer(playerUuid, runtimeServer);
+            if (runtimePlayer != null) {
+                return runtimePlayer;
+            }
+        }
+
+        return null;
+    }
+
+    private static ServerPlayer findPlayerOnServer(UUID playerUuid, MinecraftServer server) {
+        if (playerUuid == null || server == null || server.getPlayerList() == null) {
+            return null;
+        }
+
+        for (ServerPlayer player : List.copyOf(server.getPlayerList().getPlayers())) {
+            if (player == null) {
+                continue;
+            }
+
+            if (playerUuid.equals(player.getUUID())) {
+                return player;
+            }
+        }
+
+        return null;
+    }
+
+    private static void addPlayersFromServer(Map<UUID, ServerPlayer> sink, MinecraftServer server) {
+        if (sink == null || server == null || server.getPlayerList() == null) {
+            return;
+        }
+
+        for (ServerPlayer player : List.copyOf(server.getPlayerList().getPlayers())) {
+            if (player == null) {
+                continue;
+            }
+
+            sink.putIfAbsent(player.getUUID(), player);
+        }
+    }
+
     private void handlePlayerDisconnect(MinecraftServer server, String playerUuid, String playerName, String nodeId) {
         if (playerUuid == null || playerUuid.isBlank()) {
             return;
@@ -1638,7 +1725,7 @@ public final class IntegratedClusterController {
         rememberPlayerCluster(server, playerUuid, nodeId);
     }
 
-    private synchronized void markPendingInternalTravel(String playerUuid, String targetNodeId) {
+    private synchronized void markPendingInternalTravel(String playerUuid, String targetNodeId, String sourceNodeId) {
         if (playerUuid == null || playerUuid.isBlank()) {
             return;
         }
@@ -1651,6 +1738,9 @@ public final class IntegratedClusterController {
         pendingExternalLifecycleSuppressionsByPlayer.put(
                 playerUuid,
                 new ExternalLifecycleSuppressionMarker(EXTERNAL_TRAVEL_LIFECYCLE_SUPPRESSION_EVENTS, expiresAt));
+        pendingDynmapLogoutSuppressionsByPlayer.put(
+                playerUuid,
+                new DynmapLogoutSuppressionMarker(clusterLabelForNodeId(sourceNodeId), expiresAt));
     }
 
     public synchronized boolean consumeExternalJoinLeaveSuppression(String playerUuid) {
@@ -1674,6 +1764,37 @@ public final class IntegratedClusterController {
                     new ExternalLifecycleSuppressionMarker(remainingEvents, marker.expiresAtMillis()));
         }
 
+        return true;
+    }
+
+    public synchronized boolean consumeDynmapLogoutSuppression(ServerPlayer player) {
+        if (player == null) {
+            return false;
+        }
+
+        MinecraftServer server = player.level().getServer();
+        String currentNodeId = nodeIdForServer(server);
+        return consumeDynmapLogoutSuppression(player.getUUID().toString(), currentNodeId);
+    }
+
+    private synchronized boolean consumeDynmapLogoutSuppression(String playerUuid, String currentNodeId) {
+        if (playerUuid == null || playerUuid.isBlank()) {
+            return false;
+        }
+
+        pruneExpiredInternalTravelMarkers();
+
+        DynmapLogoutSuppressionMarker marker = pendingDynmapLogoutSuppressionsByPlayer.get(playerUuid);
+        if (marker == null) {
+            return false;
+        }
+
+        String currentClusterLabel = clusterLabelForNodeId(currentNodeId);
+        if (!marker.expectedSourceClusterLabel().equals(currentClusterLabel)) {
+            return false;
+        }
+
+        pendingDynmapLogoutSuppressionsByPlayer.remove(playerUuid);
         return true;
     }
 
@@ -1714,12 +1835,15 @@ public final class IntegratedClusterController {
 
         pendingInternalTravelMarkersByPlayer.remove(playerUuid);
         pendingExternalLifecycleSuppressionsByPlayer.remove(playerUuid);
+        pendingDynmapLogoutSuppressionsByPlayer.remove(playerUuid);
     }
 
     private synchronized void pruneExpiredInternalTravelMarkers() {
         long now = System.currentTimeMillis();
         pendingInternalTravelMarkersByPlayer.entrySet().removeIf(entry -> entry.getValue().expiresAtMillis() <= now);
         pendingExternalLifecycleSuppressionsByPlayer.entrySet()
+                .removeIf(entry -> entry.getValue().expiresAtMillis() <= now);
+        pendingDynmapLogoutSuppressionsByPlayer.entrySet()
                 .removeIf(entry -> entry.getValue().expiresAtMillis() <= now);
     }
 
@@ -1751,5 +1875,8 @@ public final class IntegratedClusterController {
     }
 
     private record ExternalLifecycleSuppressionMarker(int remainingEvents, long expiresAtMillis) {
+    }
+
+    private record DynmapLogoutSuppressionMarker(String expectedSourceClusterLabel, long expiresAtMillis) {
     }
 }

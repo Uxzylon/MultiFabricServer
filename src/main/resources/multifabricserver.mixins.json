@@ -6,6 +6,10 @@
 		"CommandSourceStackCommandFeedbackMixin",
 		"DedicatedServerChildConsoleInputMixin",
 		"DedicatedServerChildShutdownMixin",
+		"DynmapFabricServerClusterPlayersMixin",
+		"DynmapFabricWorldClusterNamingMixin",
+		"DynmapPlayerTrackerTravelLogoutSuppressMixin",
+		"DynmapCompatMixins",
 		"MinecraftServerChildShutdownMixin",
 		"SDLinkTravelJoinLeaveSuppressionMixin"
 	],
