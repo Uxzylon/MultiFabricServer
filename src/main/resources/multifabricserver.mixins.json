@@ -6,7 +6,8 @@
 		"CommandSourceStackCommandFeedbackMixin",
 		"DedicatedServerChildConsoleInputMixin",
 		"DedicatedServerChildShutdownMixin",
-		"MinecraftServerChildShutdownMixin"
+		"MinecraftServerChildShutdownMixin",
+		"SDLinkTravelJoinLeaveSuppressionMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1
