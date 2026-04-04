@@ -49,6 +49,7 @@ public final class IntegratedClusterController {
     private static final long SEAMLESS_NODE_READY_TIMEOUT_MILLIS = 5000L;
     private static final long SEAMLESS_NODE_READY_POLL_MILLIS = 50L;
     private static final long INTERNAL_TRAVEL_MARKER_TTL_MILLIS = TimeUnit.SECONDS.toMillis(20);
+    private static final int EXTERNAL_TRAVEL_LIFECYCLE_SUPPRESSION_EVENTS = 2;
     @SuppressWarnings("null")
     private static final Permission OP_FEEDBACK_PERMISSION = new Permission.HasCommandLevel(
             PermissionLevel.GAMEMASTERS);
@@ -65,6 +66,7 @@ public final class IntegratedClusterController {
     private final Map<String, MinecraftServer> runtimeServerInstances = new LinkedHashMap<>();
     private final Map<String, Map<String, String>> viewerRemoteTabEntrySignatures = new LinkedHashMap<>();
     private final Map<String, InternalTravelMarker> pendingInternalTravelMarkersByPlayer = new LinkedHashMap<>();
+    private final Map<String, ExternalLifecycleSuppressionMarker> pendingExternalLifecycleSuppressionsByPlayer = new LinkedHashMap<>();
 
     private boolean initialized;
     private boolean configEnabled;
@@ -183,6 +185,7 @@ public final class IntegratedClusterController {
             });
             viewerRemoteTabEntrySignatures.clear();
             pendingInternalTravelMarkersByPlayer.clear();
+            pendingExternalLifecycleSuppressionsByPlayer.clear();
             persistRuntimeState(server);
             refreshSharedTabLists();
 
@@ -229,6 +232,7 @@ public final class IntegratedClusterController {
             runtimeServerInstances.clear();
             viewerRemoteTabEntrySignatures.clear();
             pendingInternalTravelMarkersByPlayer.clear();
+            pendingExternalLifecycleSuppressionsByPlayer.clear();
             ownerServer = null;
             MultiFabricServer.LOGGER.info("[cluster-stop-debug] owner cleared after host fully stopped");
         }
@@ -253,6 +257,8 @@ public final class IntegratedClusterController {
         }
 
         runtimeServerInstances.clear();
+        pendingInternalTravelMarkersByPlayer.clear();
+        pendingExternalLifecycleSuppressionsByPlayer.clear();
 
         ClusterConfig config = ClusterConfigLoader.load(server);
         configEnabled = config.enabled();
@@ -1642,6 +1648,33 @@ public final class IntegratedClusterController {
         pendingInternalTravelMarkersByPlayer.put(
                 playerUuid,
                 new InternalTravelMarker(clusterLabelForNodeId(targetNodeId), expiresAt));
+        pendingExternalLifecycleSuppressionsByPlayer.put(
+                playerUuid,
+                new ExternalLifecycleSuppressionMarker(EXTERNAL_TRAVEL_LIFECYCLE_SUPPRESSION_EVENTS, expiresAt));
+    }
+
+    public synchronized boolean consumeExternalJoinLeaveSuppression(String playerUuid) {
+        if (playerUuid == null || playerUuid.isBlank()) {
+            return false;
+        }
+
+        pruneExpiredInternalTravelMarkers();
+
+        ExternalLifecycleSuppressionMarker marker = pendingExternalLifecycleSuppressionsByPlayer.get(playerUuid);
+        if (marker == null || marker.remainingEvents() <= 0) {
+            return false;
+        }
+
+        int remainingEvents = marker.remainingEvents() - 1;
+        if (remainingEvents <= 0) {
+            pendingExternalLifecycleSuppressionsByPlayer.remove(playerUuid);
+        } else {
+            pendingExternalLifecycleSuppressionsByPlayer.put(
+                    playerUuid,
+                    new ExternalLifecycleSuppressionMarker(remainingEvents, marker.expiresAtMillis()));
+        }
+
+        return true;
     }
 
     private synchronized boolean hasPendingInternalTravelMarker(String playerUuid) {
@@ -1680,11 +1713,14 @@ public final class IntegratedClusterController {
         }
 
         pendingInternalTravelMarkersByPlayer.remove(playerUuid);
+        pendingExternalLifecycleSuppressionsByPlayer.remove(playerUuid);
     }
 
     private synchronized void pruneExpiredInternalTravelMarkers() {
         long now = System.currentTimeMillis();
         pendingInternalTravelMarkersByPlayer.entrySet().removeIf(entry -> entry.getValue().expiresAtMillis() <= now);
+        pendingExternalLifecycleSuppressionsByPlayer.entrySet()
+                .removeIf(entry -> entry.getValue().expiresAtMillis() <= now);
     }
 
     private void persistRuntimeState(MinecraftServer fallbackServer) {
@@ -1712,5 +1748,8 @@ public final class IntegratedClusterController {
     }
 
     private record InternalTravelMarker(String expectedClusterLabel, long expiresAtMillis) {
+    }
+
+    private record ExternalLifecycleSuppressionMarker(int remainingEvents, long expiresAtMillis) {
     }
 }
