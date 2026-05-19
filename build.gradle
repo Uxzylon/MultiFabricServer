@@ -81,6 +81,14 @@ jar {
 	}
 }
 
+tasks.named("build") {
+	dependsOn(":velocity:build")
+}
+
+tasks.named("clean") {
+	dependsOn(":velocity:clean")
+}
+
 // configure the maven publication
 publishing {
 	publications {
