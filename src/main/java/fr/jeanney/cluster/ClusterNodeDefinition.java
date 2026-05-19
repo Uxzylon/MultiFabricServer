@@ -3,11 +3,7 @@ package fr.jeanney.cluster;
 public record ClusterNodeDefinition(
         String id,
         String worldName,
-        int listenPort,
         boolean enabled,
-        boolean autoStart,
-        String transferHost,
-        int transferPort,
         String proxyServerName) {
     public ClusterNodeDefinition {
         if (id == null || id.isBlank()) {
@@ -16,11 +12,8 @@ public record ClusterNodeDefinition(
         if (worldName == null || worldName.isBlank()) {
             throw new IllegalArgumentException("Node worldName cannot be blank");
         }
-        if (transferHost == null || transferHost.isBlank()) {
-            throw new IllegalArgumentException("Node transferHost cannot be blank");
-        }
-        if (proxyServerName == null || proxyServerName.isBlank()) {
-            throw new IllegalArgumentException("Node proxyServerName cannot be blank");
+        if (proxyServerName == null) {
+            proxyServerName = "";
         }
     }
 }

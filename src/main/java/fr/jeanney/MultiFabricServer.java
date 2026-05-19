@@ -3,6 +3,7 @@ package fr.jeanney;
 import fr.jeanney.cluster.IntegratedClusterController;
 import fr.jeanney.cluster.ClusterGatewayProxy;
 import fr.jeanney.cluster.command.ClusterCommand;
+import fr.jeanney.cluster.network.ClusterRegisterPayload;
 import fr.jeanney.cluster.network.ProxyConnectPayload;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
@@ -29,6 +30,8 @@ public final class MultiFabricServer implements ModInitializer {
     @Override
     @SuppressWarnings("null")
     public void onInitialize() {
+        PayloadTypeRegistry.clientboundPlay().register(ClusterRegisterPayload.TYPE,
+                ClusterRegisterPayload.STREAM_CODEC);
         PayloadTypeRegistry.clientboundPlay().register(ProxyConnectPayload.TYPE, ProxyConnectPayload.STREAM_CODEC);
 
         CommandRegistrationCallback.EVENT

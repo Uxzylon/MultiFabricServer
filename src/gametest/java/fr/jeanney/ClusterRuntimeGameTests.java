@@ -39,7 +39,7 @@ public final class ClusterRuntimeGameTests {
         String worldName = "testnode_world";
 
         try {
-            writeConfig(configPath, false, new NodeSpec(nodeId, worldName, 0, false, false));
+            writeConfig(configPath, false, new NodeSpec(nodeId, worldName, false));
         } catch (IOException ioException) {
             helper.fail("Failed to write cluster config for test: " + ioException.getMessage());
             return;
@@ -76,20 +76,15 @@ public final class ClusterRuntimeGameTests {
             return;
         }
 
-        if (!controller.startNode(server, nodeId)) {
-            helper.fail("Failed to start node after cluster enable <node>");
-            return;
-        }
-
         var runtimeOpt = controller.node(nodeId);
         if (runtimeOpt.isEmpty()) {
-            helper.fail("Node missing after command enable/start: " + nodeId);
+            helper.fail("Node missing after command enable: " + nodeId);
             return;
         }
 
         var runtime = runtimeOpt.get();
-        if (runtime.state() != ClusterNodeState.RUNNING && runtime.state() != ClusterNodeState.STARTING) {
-            helper.fail("Expected RUNNING/STARTING node state after command enable/start, got " + runtime.state()
+        if (runtime.state() != ClusterNodeState.STOPPED) {
+            helper.fail("Enabling a node should not eagerly start it, got " + runtime.state()
                     + " reason=" + runtime.failureReason());
             return;
         }
@@ -109,8 +104,7 @@ public final class ClusterRuntimeGameTests {
         String playerUuid = "00000000-0000-0000-0000-000000000123";
 
         try {
-            writeConfig(configPath, true, true, hostName, 25565,
-                    new NodeSpec(nodeId, worldName, 0, true, false));
+            writeConfig(configPath, true, true, new NodeSpec(nodeId, worldName, true));
         } catch (IOException ioException) {
             helper.fail("Failed to write cluster config for test: " + ioException.getMessage());
             return;
@@ -205,33 +199,24 @@ public final class ClusterRuntimeGameTests {
     }
 
     private static void writeConfig(Path configPath, boolean enabled, NodeSpec... nodeSpecs) throws IOException {
-        writeConfig(configPath, enabled, false, "0.0.0.0", 25565, nodeSpecs);
+        writeConfig(configPath, enabled, false, nodeSpecs);
     }
 
     private static void writeConfig(Path configPath,
             boolean enabled,
             boolean gatewayEnabled,
-            String hostTransferHost,
-            int hostTransferPort,
             NodeSpec... nodeSpecs) throws IOException {
         JsonObject root = new JsonObject();
         root.addProperty("enabled", enabled);
         root.addProperty("gatewayEnabled", gatewayEnabled);
-        root.addProperty("gatewayBindHost", "0.0.0.0");
-        root.addProperty("gatewayBindPort", 25565);
-        root.addProperty("hostTransferHost", hostTransferHost);
-        root.addProperty("hostTransferPort", hostTransferPort);
 
         JsonArray nodes = new JsonArray();
         for (NodeSpec nodeSpec : nodeSpecs) {
             JsonObject node = new JsonObject();
             node.addProperty("id", nodeSpec.id());
             node.addProperty("worldName", nodeSpec.worldName());
-            node.addProperty("listenPort", nodeSpec.listenPort());
             node.addProperty("enabled", nodeSpec.enabled());
-            node.addProperty("autoStart", nodeSpec.autoStart());
-            node.addProperty("transferHost", "127.0.0.1");
-            node.addProperty("transferPort", nodeSpec.listenPort());
+            node.addProperty("proxyServerName", nodeSpec.id());
             nodes.add(node);
         }
 
@@ -241,6 +226,6 @@ public final class ClusterRuntimeGameTests {
         Files.writeString(configPath, root.toString(), StandardCharsets.UTF_8);
     }
 
-    private record NodeSpec(String id, String worldName, int listenPort, boolean enabled, boolean autoStart) {
+    private record NodeSpec(String id, String worldName, boolean enabled) {
     }
 }

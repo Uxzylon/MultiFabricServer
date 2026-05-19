@@ -53,14 +53,15 @@ public final class ClusterConfigLoader {
     }
 
     private static ClusterConfig parseConfig(JsonObject root) {
-        boolean enabled = readBoolean(root, "enabled", false);
+        boolean enabled = readBoolean(root, "enabled", ClusterConfig.DEFAULT_ENABLED);
         boolean gatewayEnabled = readBoolean(root, "gatewayEnabled", false);
-        String gatewayBindHost = readString(root, "gatewayBindHost", "0.0.0.0");
-        int gatewayBindPort = readInt(root, "gatewayBindPort", 25565);
-        String hostTransferHost = readString(root, "hostTransferHost", "127.0.0.1");
-        int hostTransferPort = readInt(root, "hostTransferPort", 25565);
         boolean seamlessProxySwitchEnabled = readBoolean(root, "seamlessProxySwitchEnabled", false);
-        String proxyHostServerName = readString(root, "proxyHostServerName", "host");
+        String proxyHostServerName = readString(root, "proxyHostServerName",
+                ClusterConfig.DEFAULT_PROXY_HOST_SERVER_NAME);
+        String transferHost = readString(root, "transferHost", ClusterConfig.DEFAULT_TRANSFER_HOST);
+        String gatewayBindHost = readString(root, "gatewayBindHost", ClusterConfig.DEFAULT_GATEWAY_BIND_HOST);
+        int gatewayBindPort = readInt(root, "gatewayBindPort", ClusterConfig.DEFAULT_GATEWAY_BIND_PORT);
+        int nodeIdleStopSeconds = readInt(root, "nodeIdleStopSeconds", 300);
         List<ClusterNodeDefinition> nodes = new ArrayList<>();
 
         JsonArray nodeArray = root.has("nodes") && root.get("nodes").isJsonArray()
@@ -74,30 +75,25 @@ public final class ClusterConfigLoader {
             JsonObject nodeObject = nodeElement.getAsJsonObject();
             String id = readString(nodeObject, "id", "");
             String worldName = readString(nodeObject, "worldName", "");
-            int listenPort = readInt(nodeObject, "listenPort", 25565);
             boolean nodeEnabled = readBoolean(nodeObject, "enabled", true);
-            boolean autoStart = readBoolean(nodeObject, "autoStart", false);
-            String transferHost = readString(nodeObject, "transferHost", "127.0.0.1");
-            int transferPort = readInt(nodeObject, "transferPort", listenPort);
-            String proxyServerName = readString(nodeObject, "proxyServerName", id);
+            String proxyServerName = readString(nodeObject, "proxyServerName", "");
 
             if (id.isBlank() || worldName.isBlank()) {
                 MultiFabricServer.LOGGER.warn("Skipping invalid cluster node with blank id/worldName: {}", nodeObject);
                 continue;
             }
-            nodes.add(new ClusterNodeDefinition(id, worldName, listenPort, nodeEnabled, autoStart, transferHost,
-                    transferPort, proxyServerName));
+            nodes.add(new ClusterNodeDefinition(id, worldName, nodeEnabled, proxyServerName));
         }
 
         return new ClusterConfig(
                 enabled,
                 gatewayEnabled,
-                gatewayBindHost,
-                gatewayBindPort,
-                hostTransferHost,
-                hostTransferPort,
                 seamlessProxySwitchEnabled,
                 proxyHostServerName,
+                transferHost,
+                gatewayBindHost,
+                gatewayBindPort,
+                nodeIdleStopSeconds,
                 List.copyOf(nodes));
     }
 
@@ -106,17 +102,6 @@ public final class ClusterConfigLoader {
             return fallback;
         }
         return object.get(key).getAsString();
-    }
-
-    private static int readInt(JsonObject object, String key, int fallback) {
-        if (!object.has(key) || !object.get(key).isJsonPrimitive()) {
-            return fallback;
-        }
-        try {
-            return object.get(key).getAsInt();
-        } catch (Exception ignored) {
-            return fallback;
-        }
     }
 
     private static boolean readBoolean(JsonObject object, String key, boolean fallback) {
@@ -130,30 +115,35 @@ public final class ClusterConfigLoader {
         }
     }
 
+    private static int readInt(JsonObject object, String key, int fallback) {
+        if (!object.has(key) || !object.get(key).isJsonPrimitive()) {
+            return fallback;
+        }
+        try {
+            int parsed = object.get(key).getAsInt();
+            return parsed < 0 ? fallback : parsed;
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
     private static void writeDefault(Path path, ClusterConfig defaultConfig) {
         try {
             Files.createDirectories(path.getParent());
             JsonObject root = new JsonObject();
             root.addProperty("enabled", defaultConfig.enabled());
             root.addProperty("gatewayEnabled", defaultConfig.gatewayEnabled());
-            root.addProperty("gatewayBindHost", defaultConfig.gatewayBindHost());
-            root.addProperty("gatewayBindPort", defaultConfig.gatewayBindPort());
-            root.addProperty("hostTransferHost", defaultConfig.hostTransferHost());
-            root.addProperty("hostTransferPort", defaultConfig.hostTransferPort());
             root.addProperty("seamlessProxySwitchEnabled", defaultConfig.seamlessProxySwitchEnabled());
             root.addProperty("proxyHostServerName", defaultConfig.proxyHostServerName());
+            root.addProperty("transferHost", defaultConfig.transferHost());
+            root.addProperty("gatewayBindHost", defaultConfig.gatewayBindHost());
+            root.addProperty("gatewayBindPort", defaultConfig.gatewayBindPort());
+            root.addProperty("nodeIdleStopSeconds", defaultConfig.nodeIdleStopSeconds());
 
             JsonArray nodes = new JsonArray();
             for (ClusterNodeDefinition node : defaultConfig.nodes()) {
                 JsonObject nodeJson = new JsonObject();
-                nodeJson.addProperty("id", node.id());
-                nodeJson.addProperty("worldName", node.worldName());
-                nodeJson.addProperty("listenPort", node.listenPort());
-                nodeJson.addProperty("enabled", node.enabled());
-                nodeJson.addProperty("autoStart", node.autoStart());
-                nodeJson.addProperty("transferHost", node.transferHost());
-                nodeJson.addProperty("transferPort", node.transferPort());
-                nodeJson.addProperty("proxyServerName", node.proxyServerName());
+                writeNodeJson(nodeJson, node);
                 nodes.add(nodeJson);
             }
             root.add("nodes", nodes);
@@ -176,24 +166,17 @@ public final class ClusterConfigLoader {
             JsonObject root = new JsonObject();
             root.addProperty("enabled", config.enabled());
             root.addProperty("gatewayEnabled", config.gatewayEnabled());
-            root.addProperty("gatewayBindHost", config.gatewayBindHost());
-            root.addProperty("gatewayBindPort", config.gatewayBindPort());
-            root.addProperty("hostTransferHost", config.hostTransferHost());
-            root.addProperty("hostTransferPort", config.hostTransferPort());
             root.addProperty("seamlessProxySwitchEnabled", config.seamlessProxySwitchEnabled());
             root.addProperty("proxyHostServerName", config.proxyHostServerName());
+            root.addProperty("transferHost", config.transferHost());
+            root.addProperty("gatewayBindHost", config.gatewayBindHost());
+            root.addProperty("gatewayBindPort", config.gatewayBindPort());
+            root.addProperty("nodeIdleStopSeconds", config.nodeIdleStopSeconds());
 
             JsonArray nodes = new JsonArray();
             for (ClusterNodeDefinition node : config.nodes()) {
                 JsonObject nodeJson = new JsonObject();
-                nodeJson.addProperty("id", node.id());
-                nodeJson.addProperty("worldName", node.worldName());
-                nodeJson.addProperty("listenPort", node.listenPort());
-                nodeJson.addProperty("enabled", node.enabled());
-                nodeJson.addProperty("autoStart", node.autoStart());
-                nodeJson.addProperty("transferHost", node.transferHost());
-                nodeJson.addProperty("transferPort", node.transferPort());
-                nodeJson.addProperty("proxyServerName", node.proxyServerName());
+                writeNodeJson(nodeJson, node);
                 nodes.add(nodeJson);
             }
             root.add("nodes", nodes);
@@ -203,6 +186,15 @@ public final class ClusterConfigLoader {
             }
         } catch (IOException ioException) {
             MultiFabricServer.LOGGER.error("Failed to save cluster config at {}", path, ioException);
+        }
+    }
+
+    private static void writeNodeJson(JsonObject nodeJson, ClusterNodeDefinition node) {
+        nodeJson.addProperty("id", node.id());
+        nodeJson.addProperty("worldName", node.worldName());
+        nodeJson.addProperty("enabled", node.enabled());
+        if (node.proxyServerName() != null && !node.proxyServerName().isBlank()) {
+            nodeJson.addProperty("proxyServerName", node.proxyServerName());
         }
     }
 }

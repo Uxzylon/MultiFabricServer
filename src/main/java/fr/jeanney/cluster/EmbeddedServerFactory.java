@@ -34,6 +34,9 @@ import java.io.Reader;
 import java.io.Writer;
 import java.lang.reflect.Field;
 import java.lang.reflect.Constructor;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -66,7 +69,9 @@ public final class EmbeddedServerFactory {
         try {
             Files.createDirectories(nodeRoot);
 
-            DedicatedServerSettings settings = prepareServerSettings(hostServer, nodeRoot, definition);
+            int listenPort = resolveListenPort(definition, nodeRoot);
+
+            DedicatedServerSettings settings = prepareServerSettings(hostServer, nodeRoot, definition, listenPort);
             LevelStorageSource levelStorageSource = LevelStorageSource.createDefault(
                     Objects.requireNonNull(nodeRoot.resolve("universe")));
             levelStorageAccess = levelStorageSource.createAccess(Objects.requireNonNull(definition.worldName()));
@@ -81,27 +86,34 @@ public final class EmbeddedServerFactory {
                     packRepository,
                     worldStem,
                     settings,
-                    definition.listenPort()));
+                    listenPort));
 
             levelStorageAccess = null; // Child server now owns and closes this session.
-            waitUntilReady(definition, childServer);
+            waitUntilReady(definition, childServer, listenPort);
+
+            int resolvedListenPort = childServer.getPort() > 0 ? childServer.getPort() : listenPort;
+            int resolvedTransferPort = resolvedListenPort;
 
             MultiFabricServer.LOGGER.info(
                     "Embedded child server '{}' is running for world '{}' on port {}",
                     definition.id(),
                     definition.worldName(),
-                    childServer.getPort());
+                    resolvedListenPort);
 
             MultiFabricServer.LOGGER.info(
                     "[cluster-stop-debug] child start complete node={} child={} port={} running={} stopped={} thread={}",
                     definition.id(),
                     describeServer(childServer),
-                    childServer.getPort(),
+                    resolvedListenPort,
                     childServer.isRunning(),
                     childServer.isStopped(),
                     Thread.currentThread().getName());
 
-            return Optional.of(new DedicatedEmbeddedServerHandle(definition.id(), childServer));
+            return Optional.of(new DedicatedEmbeddedServerHandle(
+                    definition.id(),
+                    childServer,
+                    resolvedListenPort,
+                    resolvedTransferPort));
         } catch (Exception exception) {
             MultiFabricServer.LOGGER.error(
                     "Failed to start embedded child server '{}' for world '{}'",
@@ -126,10 +138,12 @@ public final class EmbeddedServerFactory {
     private static DedicatedServerSettings prepareServerSettings(
             MinecraftServer hostServer,
             Path nodeRoot,
-            ClusterNodeDefinition definition)
+            ClusterNodeDefinition definition,
+            int listenPort)
             throws IOException {
         Path serverPropertiesPath = nodeRoot.resolve("server.properties");
         Files.createDirectories(serverPropertiesPath.getParent());
+        ProxyForwardingConfig.copyFabricProxyLiteConfig(hostServer, nodeRoot);
 
         Properties properties = new Properties();
         if (Files.exists(serverPropertiesPath)) {
@@ -139,13 +153,15 @@ public final class EmbeddedServerFactory {
         }
 
         boolean hostSupportsAuthentication = hostServer.services().profileRepository() != null;
-        boolean onlineMode = readHostServerBooleanProperty(hostServer, "online-mode", hostSupportsAuthentication);
+        boolean onlineMode = hostSupportsAuthentication
+                && readHostServerBooleanProperty(hostServer, "online-mode", true);
         // Default to non-enforced secure profile unless explicitly configured on host.
-        boolean enforceSecureProfile = readHostServerBooleanProperty(hostServer, "enforce-secure-profile", false);
+        boolean enforceSecureProfile = onlineMode
+                && readHostServerBooleanProperty(hostServer, "enforce-secure-profile", false);
         boolean acceptsTransfers = true;
 
         properties.setProperty("level-name", definition.worldName());
-        properties.setProperty("server-port", Integer.toString(definition.listenPort()));
+        properties.setProperty("server-port", Integer.toString(listenPort));
         properties.setProperty("server-ip", "127.0.0.1");
         properties.setProperty("online-mode", Boolean.toString(onlineMode));
         properties.setProperty("enforce-secure-profile", Boolean.toString(enforceSecureProfile));
@@ -164,6 +180,37 @@ public final class EmbeddedServerFactory {
         DedicatedServerSettings settings = new DedicatedServerSettings(serverPropertiesPath);
         settings.forceSave();
         return settings;
+    }
+
+    private static int resolveListenPort(ClusterNodeDefinition definition, Path nodeRoot) throws IOException {
+        Path serverPropertiesPath = nodeRoot.resolve("server.properties");
+        if (Files.exists(serverPropertiesPath)) {
+            Properties existing = new Properties();
+            try (Reader reader = Files.newBufferedReader(serverPropertiesPath, StandardCharsets.UTF_8)) {
+                existing.load(reader);
+            }
+
+            String existingPort = existing.getProperty("server-port");
+            if (existingPort != null) {
+                try {
+                    int parsed = Integer.parseInt(existingPort.trim());
+                    if (parsed > 0) {
+                        return parsed;
+                    }
+                } catch (NumberFormatException ignored) {
+                    // Fall back to dynamic assignment below.
+                }
+            }
+        }
+
+        try (ServerSocket socket = new ServerSocket(0)) {
+            socket.setReuseAddress(true);
+            int dynamicPort = socket.getLocalPort();
+            if (dynamicPort <= 0) {
+                throw new IllegalStateException("Failed to allocate an available dynamic port");
+            }
+            return dynamicPort;
+        }
     }
 
     private static boolean readHostServerBooleanProperty(MinecraftServer hostServer, String key,
@@ -195,26 +242,35 @@ public final class EmbeddedServerFactory {
             return null;
         }
 
-        ArrayList<Path> candidates = new ArrayList<>(4);
-        candidates.add(hostWorldRoot.resolve("server.properties"));
-
-        Path parent = hostWorldRoot.getParent();
-        if (parent != null) {
-            candidates.add(parent.resolve("server.properties"));
-
-            Path grandParent = parent.getParent();
-            if (grandParent != null) {
-                candidates.add(grandParent.resolve("server.properties"));
-            }
-        }
-
-        for (Path candidate : candidates) {
-            if (candidate != null && Files.exists(candidate)) {
-                return candidate;
+        for (Path serverDirectory : resolveHostServerDirectoryCandidates(hostWorldRoot)) {
+            Path propertiesPath = serverDirectory.resolve("server.properties");
+            if (Files.exists(propertiesPath)) {
+                return propertiesPath;
             }
         }
 
         return null;
+    }
+
+    private static ArrayList<Path> resolveHostServerDirectoryCandidates(Path hostWorldRoot) {
+        ArrayList<Path> candidates = new ArrayList<>(3);
+        if (hostWorldRoot == null) {
+            return candidates;
+        }
+
+        candidates.add(hostWorldRoot);
+
+        Path parent = hostWorldRoot.getParent();
+        if (parent != null) {
+            candidates.add(parent);
+
+            Path grandParent = parent.getParent();
+            if (grandParent != null) {
+                candidates.add(grandParent);
+            }
+        }
+
+        return candidates;
     }
 
     private static Services resolveServices(MinecraftServer hostServer) {
@@ -362,17 +418,21 @@ public final class EmbeddedServerFactory {
                 complete.dimensionsRegistryAccess());
     }
 
-    private static void waitUntilReady(ClusterNodeDefinition definition, MinecraftServer server)
+    private static void waitUntilReady(ClusterNodeDefinition definition, MinecraftServer server, int listenPort)
             throws InterruptedException {
         long deadline = System.currentTimeMillis() + STARTUP_TIMEOUT_MILLIS;
         int loopCount = 0;
         while (System.currentTimeMillis() < deadline) {
             loopCount++;
-            if (server.isRunning() && !server.isStopped()) {
+            if (server.isRunning()
+                    && !server.isStopped()
+                    && server.getTickCount() > 0
+                    && isEndpointReachable("127.0.0.1", listenPort)) {
                 MultiFabricServer.LOGGER.info(
-                        "[cluster-stop-debug] child ready node={} child={} loops={} running={} stopped={} tick={} thread={}",
+                        "[cluster-stop-debug] child ready node={} child={} port={} loops={} running={} stopped={} tick={} thread={}",
                         definition.id(),
                         describeServer(server),
+                        listenPort,
                         loopCount,
                         server.isRunning(),
                         server.isStopped(),
@@ -404,11 +464,39 @@ public final class EmbeddedServerFactory {
         throw new IllegalStateException("Timeout while waiting for embedded child server to become ready");
     }
 
-    private record DedicatedEmbeddedServerHandle(String nodeId, MinecraftServer server)
+    private static boolean isEndpointReachable(String host, int port) {
+        if (host == null || host.isBlank() || port <= 0) {
+            return false;
+        }
+
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(host, port), 150);
+            return true;
+        } catch (IOException ignored) {
+            return false;
+        }
+    }
+
+    private record DedicatedEmbeddedServerHandle(String nodeId, MinecraftServer server, int resolvedListenPort,
+            int resolvedTransferPort)
             implements EmbeddedServerHandle {
         @Override
         public boolean isAlive() {
             return server.isRunning() && !server.isStopped();
+        }
+
+        @Override
+        public java.util.OptionalInt listenPort() {
+            return resolvedListenPort > 0
+                    ? java.util.OptionalInt.of(resolvedListenPort)
+                    : java.util.OptionalInt.empty();
+        }
+
+        @Override
+        public java.util.OptionalInt transferPort() {
+            return resolvedTransferPort > 0
+                    ? java.util.OptionalInt.of(resolvedTransferPort)
+                    : listenPort();
         }
 
         @Override

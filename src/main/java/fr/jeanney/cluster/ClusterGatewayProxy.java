@@ -1,6 +1,7 @@
 package fr.jeanney.cluster;
 
 import fr.jeanney.MultiFabricServer;
+import net.minecraft.gametest.framework.GameTestServer;
 import net.minecraft.server.MinecraftServer;
 
 import java.io.ByteArrayInputStream;
@@ -27,6 +28,10 @@ public final class ClusterGatewayProxy {
 
     public synchronized void onServerStarted(MinecraftServer server, IntegratedClusterController controller) {
         if (!controller.isOwnerServer(server)) {
+            return;
+        }
+
+        if (server instanceof GameTestServer) {
             return;
         }
 

@@ -14,6 +14,8 @@ public final class ClusterNodeRuntime {
     private ClusterNodeState state = ClusterNodeState.STOPPED;
     private String failureReason = "";
     private Optional<EmbeddedServerHandle> handle = Optional.empty();
+    private int resolvedListenPort = -1;
+    private int resolvedTransferPort = -1;
 
     public ClusterNodeRuntime(ClusterNodeDefinition definition) {
         this.definition = definition;
@@ -29,6 +31,20 @@ public final class ClusterNodeRuntime {
 
     public String failureReason() {
         return failureReason;
+    }
+
+    public synchronized int resolvedListenPort() {
+        if (resolvedListenPort > 0) {
+            return resolvedListenPort;
+        }
+        return -1;
+    }
+
+    public synchronized int resolvedTransferPort() {
+        if (resolvedTransferPort > 0) {
+            return resolvedTransferPort;
+        }
+        return resolvedListenPort();
     }
 
     public synchronized void start(MinecraftServer hostServer, Path clusterRoot) {
@@ -57,8 +73,15 @@ public final class ClusterNodeRuntime {
             Files.createDirectories(nodeRoot);
             handle = EmbeddedServerFactory.tryStartEmbeddedServer(hostServer, definition, nodeRoot);
             if (handle.isPresent()) {
+                EmbeddedServerHandle embeddedServerHandle = handle.get();
+                resolvedListenPort = embeddedServerHandle.listenPort().orElse(-1);
+                resolvedTransferPort = embeddedServerHandle.transferPort().orElse(resolvedListenPort);
                 state = ClusterNodeState.RUNNING;
-                MultiFabricServer.LOGGER.info("Node '{}' started", definition.id());
+                MultiFabricServer.LOGGER.info(
+                        "Node '{}' started (listenPort={}, transferPort={})",
+                        definition.id(),
+                        resolvedListenPort,
+                        resolvedTransferPort);
                 return;
             }
             state = ClusterNodeState.FAILED;
@@ -102,6 +125,8 @@ public final class ClusterNodeRuntime {
             }
         });
         handle = Optional.empty();
+        resolvedListenPort = -1;
+        resolvedTransferPort = -1;
         if (state != ClusterNodeState.FAILED) {
             state = ClusterNodeState.STOPPED;
             failureReason = "";
