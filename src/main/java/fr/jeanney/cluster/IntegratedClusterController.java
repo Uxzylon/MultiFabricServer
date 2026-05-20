@@ -50,6 +50,7 @@ public final class IntegratedClusterController {
     private static final String LOOPBACK_HOST = "127.0.0.1";
     private static final long SEAMLESS_NODE_READY_TIMEOUT_MILLIS = 5000L;
     private static final long SEAMLESS_NODE_READY_POLL_MILLIS = 50L;
+    private static final long PROXY_REGISTRATION_SETTLE_MILLIS = 150L;
     private static final long INTERNAL_TRAVEL_MARKER_TTL_MILLIS = TimeUnit.SECONDS.toMillis(20);
     private static final int EXTERNAL_TRAVEL_LIFECYCLE_SUPPRESSION_EVENTS = 2;
     @SuppressWarnings("null")
@@ -527,6 +528,36 @@ public final class IntegratedClusterController {
         return true;
     }
 
+    public synchronized boolean addNode(MinecraftServer server, String nodeId, String worldName) {
+        MinecraftServer controlServer = resolveControlServer(server);
+        if (controlServer == null) {
+            return false;
+        }
+
+        String normalizedNodeId = normalizeNodeName(nodeId);
+        String normalizedWorldName = normalizeNodeName(worldName);
+        if (normalizedNodeId == null || normalizedWorldName == null || runtimes.containsKey(normalizedNodeId)) {
+            return false;
+        }
+
+        List<ClusterNodeDefinition> updatedNodes = new ArrayList<>(configSnapshot.nodes());
+        updatedNodes.add(new ClusterNodeDefinition(normalizedNodeId, normalizedWorldName, true, ""));
+
+        ClusterConfig updatedConfig = new ClusterConfig(
+                configSnapshot.enabled(),
+                configSnapshot.gatewayEnabled(),
+                configSnapshot.seamlessProxySwitchEnabled(),
+                configSnapshot.proxyHostServerName(),
+                configSnapshot.transferHost(),
+                configSnapshot.gatewayBindHost(),
+                configSnapshot.gatewayBindPort(),
+                configSnapshot.nodeIdleStopSeconds(),
+                List.copyOf(updatedNodes));
+        ClusterConfigLoader.save(controlServer, updatedConfig);
+        reloadFromDiskInternal(controlServer);
+        return runtimes.containsKey(normalizedNodeId);
+    }
+
     public synchronized boolean removeNode(MinecraftServer server, String nodeId) {
         MinecraftServer controlServer = resolveControlServer(server);
         if (controlServer == null) {
@@ -566,6 +597,23 @@ public final class IntegratedClusterController {
         ClusterConfigLoader.save(controlServer, updatedConfig);
         reloadFromDiskInternal(controlServer);
         return true;
+    }
+
+    public static boolean isValidNodeName(String value) {
+        return normalizeNodeName(value) != null;
+    }
+
+    private static String normalizeNodeName(String value) {
+        if (value == null) {
+            return null;
+        }
+
+        String normalized = value.trim();
+        if (normalized.isEmpty() || normalized.length() > 64 || !normalized.matches("[A-Za-z0-9_.-]+")) {
+            return null;
+        }
+
+        return normalized.toLowerCase(Locale.ROOT);
     }
 
     public synchronized void rememberPlayerCluster(MinecraftServer server, ServerPlayer player, String clusterId) {
@@ -1634,8 +1682,9 @@ public final class IntegratedClusterController {
         }
 
         try {
-            markPendingInternalTravel(player.getUUID().toString(), hostTarget ? null : targetNodeId,
-                    nodeIdForServer(server));
+            UUID playerUuid = player.getUUID();
+            markPendingInternalTravel(playerUuid.toString(), hostTarget ? null : targetNodeId, nodeIdForServer(server));
+            boolean registeredDynamicTarget = false;
             if (!hostTarget && targetNodeId != null) {
                 ClusterNodeRuntime runtime = runtimes.get(targetNodeId);
                 if (runtime != null) {
@@ -1645,14 +1694,16 @@ public final class IntegratedClusterController {
                                 effectiveProxyServerName,
                                 runtimeTransferHost(),
                                 transferPort)));
+                        registeredDynamicTarget = true;
                     }
                 }
             }
 
-            player.connection
-                    .send(new ClientboundCustomPayloadPacket(new ProxyConnectPayload(effectiveProxyServerName)));
-            if (!hostTarget) {
-                rememberPlayerCluster(server, player, targetNodeId);
+            if (registeredDynamicTarget) {
+                scheduleProxyConnectAfterRegistration(server, playerUuid, effectiveProxyServerName, targetNodeId,
+                        hostTarget);
+            } else {
+                sendProxyConnect(server, player, effectiveProxyServerName, targetNodeId, hostTarget);
             }
             return true;
         } catch (Exception exception) {
@@ -1663,6 +1714,51 @@ public final class IntegratedClusterController {
                     targetNodeId,
                     exception);
             return false;
+        }
+    }
+
+    private void scheduleProxyConnectAfterRegistration(MinecraftServer server,
+            UUID playerUuid,
+            String proxyServerName,
+            String targetNodeId,
+            boolean hostTarget) {
+        Thread.startVirtualThread(() -> {
+            try {
+                Thread.sleep(PROXY_REGISTRATION_SETTLE_MILLIS);
+            } catch (InterruptedException interruptedException) {
+                Thread.currentThread().interrupt();
+                clearPendingInternalTravelMarker(playerUuid.toString());
+                return;
+            }
+
+            server.execute(() -> {
+                ServerPlayer currentPlayer = server.getPlayerList().getPlayer(playerUuid);
+                if (currentPlayer == null) {
+                    clearPendingInternalTravelMarker(playerUuid.toString());
+                    return;
+                }
+                sendProxyConnect(server, currentPlayer, proxyServerName, targetNodeId, hostTarget);
+            });
+        });
+    }
+
+    private void sendProxyConnect(MinecraftServer server,
+            ServerPlayer player,
+            String proxyServerName,
+            String targetNodeId,
+            boolean hostTarget) {
+        try {
+            player.connection.send(new ClientboundCustomPayloadPacket(new ProxyConnectPayload(proxyServerName)));
+            if (!hostTarget) {
+                rememberPlayerCluster(server, player, targetNodeId);
+            }
+        } catch (Exception exception) {
+            clearPendingInternalTravelMarker(player.getUUID().toString());
+            MultiFabricServer.LOGGER.error("Failed to send proxy switch for player {} to {} (node={})",
+                    player.getScoreboardName(),
+                    proxyServerName,
+                    targetNodeId,
+                    exception);
         }
     }
 

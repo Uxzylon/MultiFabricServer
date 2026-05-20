@@ -54,8 +54,7 @@ public record ClusterConfig(
                 DEFAULT_GATEWAY_BIND_HOST,
                 DEFAULT_GATEWAY_BIND_PORT,
                 300,
-                List.of(new ClusterNodeDefinition("creative", "creativeworld", true,
-                        "")));
+                List.of());
     }
 
     private static int readIntSystemProperty(String key, int fallback) {
