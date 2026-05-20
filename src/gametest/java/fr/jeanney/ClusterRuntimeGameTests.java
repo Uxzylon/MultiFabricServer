@@ -2,6 +2,7 @@ package fr.jeanney;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import fr.jeanney.cluster.ClusterConfig;
 import fr.jeanney.cluster.ClusterPlayerPresence;
 import fr.jeanney.cluster.IntegratedClusterController;
 import net.fabricmc.fabric.api.gametest.v1.GameTest;
@@ -24,6 +25,10 @@ public final class ClusterRuntimeGameTests {
         Path configPath = server.getWorldPath(LevelResource.ROOT).resolve("multifabricserver-cluster.json");
         if (!Files.exists(configPath)) {
             helper.fail("Expected cluster config file to be generated at " + configPath);
+            return;
+        }
+        if (!ClusterConfig.defaultConfig().nodes().isEmpty()) {
+            helper.fail("Default cluster config should not create sample nodes");
             return;
         }
         helper.succeed();
@@ -86,6 +91,62 @@ public final class ClusterRuntimeGameTests {
         if (runtime.state() != ClusterNodeState.STOPPED) {
             helper.fail("Enabling a node should not eagerly start it, got " + runtime.state()
                     + " reason=" + runtime.failureReason());
+            return;
+        }
+
+        helper.succeed();
+    }
+
+    @GameTest(maxTicks = 4000)
+    public void clusterAddCommandCreatesLazyNode(GameTestHelper helper) {
+        MinecraftServer server = helper.getLevel().getServer();
+        var controller = MultiFabricServer.clusterController();
+
+        Path configPath = server.getWorldPath(LevelResource.ROOT).resolve("multifabricserver-cluster.json");
+        String nodeId = "cmdnode";
+        String worldName = "cmdworld";
+
+        try {
+            writeConfig(configPath, true);
+        } catch (IOException ioException) {
+            helper.fail("Failed to write cluster config for test: " + ioException.getMessage());
+            return;
+        }
+
+        controller.reloadFromDisk(server);
+
+        int commandResult;
+        try {
+            commandResult = server.getCommands().getDispatcher().execute(
+                    "cluster add " + nodeId + " " + worldName,
+                    server.createCommandSourceStack());
+        } catch (Exception exception) {
+            helper.fail("cluster add command failed: " + exception.getMessage());
+            return;
+        }
+
+        if (commandResult <= 0) {
+            helper.fail("cluster add command had no effect");
+            return;
+        }
+
+        var runtimeOpt = controller.node(nodeId);
+        if (runtimeOpt.isEmpty()) {
+            helper.fail("Added node is missing: " + nodeId);
+            return;
+        }
+
+        var runtime = runtimeOpt.get();
+        if (!worldName.equals(runtime.definition().worldName())) {
+            helper.fail("Added node world mismatch, got " + runtime.definition().worldName());
+            return;
+        }
+        if (!runtime.definition().enabled()) {
+            helper.fail("Added node should be enabled");
+            return;
+        }
+        if (runtime.state() != ClusterNodeState.STOPPED) {
+            helper.fail("Added node should remain lazy/stopped, got " + runtime.state());
             return;
         }
 

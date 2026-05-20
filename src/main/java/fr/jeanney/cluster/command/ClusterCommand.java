@@ -3,20 +3,27 @@ package fr.jeanney.cluster.command;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.ArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.suggestion.Suggestions;
+import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import fr.jeanney.MultiFabricServer;
 import fr.jeanney.cluster.ClusterPlayerPresence;
 import fr.jeanney.cluster.ClusterNodeRuntime;
 import fr.jeanney.cluster.ClusterNodeState;
 import fr.jeanney.cluster.IntegratedClusterController;
 import fr.jeanney.cluster.ProxyForwardingConfig;
+import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.server.permissions.Permission;
 import net.minecraft.server.permissions.PermissionLevel;
 
 import java.util.Comparator;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.stream.Stream;
 
 public final class ClusterCommand {
 
@@ -33,35 +40,7 @@ public final class ClusterCommand {
                         .requires(ClusterCommand::hasNodeAdminPermission)
                         .executes(context -> {
                             CommandSourceStack source = context.getSource();
-                            int localPlayers = source.getServer().getPlayerList().getPlayers().size();
-                            int sharedPlayers = controller.sharedOnlinePlayersCount();
-                            source.sendSuccess(() -> Component.literal(
-                                    "Integrated cluster status. initialized=" + controller.isInitialized()
-                                            + ", configEnabled=" + controller.isConfigEnabled()
-                                            + ", localPlayers=" + localPlayers
-                                            + ", sharedPlayers=" + sharedPlayers
-                                            + ", gatewayEnabled=" + controller.isGatewayEnabled()
-                                            + ", gatewayBind=" + controller.gatewayBindHost() + ":"
-                                            + controller.gatewayBindPort()
-                                            + ", hostTransfer=" + controller.hostTransferHost() + ":"
-                                            + controller.hostTransferPort()
-                                            + ", seamlessProxySwitch="
-                                            + controller.isSeamlessProxySwitchEnabled()
-                                            + ", proxyHostServer=" + controller.proxyHostServerName()
-                                            + ", nodeIdleStopSeconds=" + controller.nodeIdleStopSeconds()),
-                                    false);
-                            for (ClusterNodeRuntime runtime : controller.allNodes()) {
-                                int transferPort = runtime.resolvedTransferPort();
-                                String line = "- " + runtime.definition().id() +
-                                        " world=" + runtime.definition().worldName() +
-                                        " enabled=" + runtime.definition().enabled() +
-                                        " transfer=" + controller.runtimeTransferHost() + ":"
-                                    + transferPort +
-                                        " state=" + runtime.state() +
-                                        (runtime.failureReason().isBlank() ? "" : " reason=" + runtime.failureReason());
-                                source.sendSuccess(() -> Component.literal(line), false);
-                            }
-                            return 1;
+                            return showStatus(source, controller);
                         }))
                 .then(Commands.literal("players")
                         .requires(ClusterCommand::hasNodeAdminPermission)
@@ -99,9 +78,23 @@ public final class ClusterCommand {
                                     true);
                             return 1;
                         }))
+                .then(Commands.literal("add")
+                        .requires(ClusterCommand::hasNodeAdminPermission)
+                        .then(Commands.argument("node", wordArgumentType())
+                                .executes(context -> {
+                                    String node = StringArgumentType.getString(context, "node");
+                                    return addNode(context.getSource(), controller, node, node);
+                                })
+                                .then(Commands.argument("world", wordArgumentType())
+                                        .executes(context -> {
+                                            String node = StringArgumentType.getString(context, "node");
+                                            String world = StringArgumentType.getString(context, "world");
+                                            return addNode(context.getSource(), controller, node, world);
+                                        }))))
                 .then(Commands.literal("start")
                         .requires(ClusterCommand::hasNodeAdminPermission)
                         .then(Commands.argument("node", wordArgumentType())
+                                .suggests((context, builder) -> suggestNodes(controller, builder))
                                 .executes(context -> {
                                     String node = StringArgumentType.getString(context, "node");
                                     boolean started = controller.startNode(context.getSource().getServer(), node);
@@ -136,6 +129,7 @@ public final class ClusterCommand {
                             return 1;
                         })
                         .then(Commands.argument("node", wordArgumentType())
+                                .suggests((context, builder) -> suggestNodes(controller, builder))
                                 .executes(context -> {
                                     String node = StringArgumentType.getString(context, "node");
                                     boolean changed = controller.setNodeEnabled(context.getSource().getServer(), node,
@@ -175,6 +169,7 @@ public final class ClusterCommand {
                             return 1;
                         })
                         .then(Commands.argument("node", wordArgumentType())
+                                .suggests((context, builder) -> suggestNodes(controller, builder))
                                 .executes(context -> {
                                     String node = StringArgumentType.getString(context, "node");
                                     boolean changed = controller.setNodeEnabled(context.getSource().getServer(), node,
@@ -190,6 +185,7 @@ public final class ClusterCommand {
                 .then(Commands.literal("remove")
                         .requires(ClusterCommand::hasNodeAdminPermission)
                         .then(Commands.argument("node", wordArgumentType())
+                                .suggests((context, builder) -> suggestNodes(controller, builder))
                                 .executes(context -> {
                                     String node = StringArgumentType.getString(context, "node");
                                     boolean removed = controller.removeNode(context.getSource().getServer(), node);
@@ -203,12 +199,7 @@ public final class ClusterCommand {
                                 })))
                 .then(Commands.literal("tp")
                         .then(Commands.argument("target", wordArgumentType())
-                                .executes(context -> {
-                                    String target = StringArgumentType.getString(context, "target");
-                                    return transferToTarget(context.getSource(), controller, target);
-                                })))
-                .then(Commands.literal("travel")
-                        .then(Commands.argument("target", wordArgumentType())
+                                .suggests((context, builder) -> suggestTravelTargets(controller, builder))
                                 .executes(context -> {
                                     String target = StringArgumentType.getString(context, "target");
                                     return transferToTarget(context.getSource(), controller, target);
@@ -216,6 +207,7 @@ public final class ClusterCommand {
                 .then(Commands.literal("stop")
                         .requires(ClusterCommand::hasNodeAdminPermission)
                         .then(Commands.argument("node", wordArgumentType())
+                                .suggests((context, builder) -> suggestNodes(controller, builder))
                                 .executes(context -> {
                                     String node = StringArgumentType.getString(context, "node");
                                     boolean stopped = controller.stopNode(node);
@@ -240,6 +232,116 @@ public final class ClusterCommand {
 
     private static ArgumentType<String> wordArgumentType() {
         return Objects.requireNonNull(StringArgumentType.word());
+    }
+
+    private static int addNode(CommandSourceStack source, IntegratedClusterController controller, String node,
+            String world) {
+        if (!IntegratedClusterController.isValidNodeName(node)) {
+            source.sendFailure(Component.literal(
+                    "Invalid cluster name. Use 1-64 characters: letters, numbers, dot, dash, underscore."));
+            return 0;
+        }
+        if (!IntegratedClusterController.isValidNodeName(world)) {
+            source.sendFailure(Component.literal(
+                    "Invalid world name. Use 1-64 characters: letters, numbers, dot, dash, underscore."));
+            return 0;
+        }
+        if (controller.hasNode(node)) {
+            source.sendFailure(Component.literal("Cluster already exists: " + node));
+            return 0;
+        }
+
+        boolean added = controller.addNode(source.getServer(), node, world);
+        if (!added) {
+            source.sendFailure(Component.literal("Failed to add cluster: " + node));
+            return 0;
+        }
+
+        source.sendSuccess(() -> Component.literal("Added cluster ")
+                .append(Component.literal(node).withStyle(ChatFormatting.AQUA))
+                .append(Component.literal(" using world "))
+                .append(Component.literal(world).withStyle(ChatFormatting.GRAY)), true);
+        return 1;
+    }
+
+    private static CompletableFuture<Suggestions> suggestNodes(IntegratedClusterController controller,
+            SuggestionsBuilder builder) {
+        return SharedSuggestionProvider.suggest(nodeIds(controller), builder);
+    }
+
+    private static CompletableFuture<Suggestions> suggestTravelTargets(IntegratedClusterController controller,
+            SuggestionsBuilder builder) {
+        return SharedSuggestionProvider.suggest(
+                Stream.concat(Stream.of("host"), nodeIds(controller)),
+                builder);
+    }
+
+    private static Stream<String> nodeIds(IntegratedClusterController controller) {
+        return controller.allNodes().stream()
+                .map(runtime -> runtime.definition().id())
+                .sorted(String.CASE_INSENSITIVE_ORDER);
+    }
+
+    private static int showStatus(CommandSourceStack source, IntegratedClusterController controller) {
+        int totalPlayers = controller.sharedOnlinePlayersCount();
+        source.sendSuccess(() -> Component.literal("Cluster status")
+                .withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD)
+                .append(Component.literal("  " + totalPlayers + " online")
+                        .withStyle(ChatFormatting.GRAY)),
+                false);
+
+        if (!controller.isConfigEnabled()) {
+            source.sendSuccess(() -> Component.literal("Runtime disabled")
+                    .withStyle(ChatFormatting.RED), false);
+        }
+
+        source.sendSuccess(() -> statusLine("host", true, true, countPlayers(controller, null)), false);
+
+        var nodes = controller.allNodes().stream()
+                .sorted(Comparator.comparing(runtime -> runtime.definition().id(), String.CASE_INSENSITIVE_ORDER))
+                .toList();
+        if (nodes.isEmpty()) {
+            source.sendSuccess(() -> Component.literal("No clusters configured")
+                    .withStyle(ChatFormatting.GRAY), false);
+            return 1;
+        }
+
+        for (ClusterNodeRuntime runtime : nodes) {
+            String nodeId = runtime.definition().id();
+            source.sendSuccess(
+                    () -> statusLine(
+                            nodeId,
+                            runtime.definition().enabled(),
+                            runtime.state() == ClusterNodeState.RUNNING,
+                            countPlayers(controller, nodeId)),
+                    false);
+        }
+        return 1;
+    }
+
+    private static int countPlayers(IntegratedClusterController controller, String nodeId) {
+        return (int) controller.sharedOnlinePlayers().stream()
+                .filter(player -> Objects.equals(player.nodeId(), nodeId))
+                .count();
+    }
+
+    private static Component statusLine(String name, boolean enabled, boolean running, int players) {
+        return Component.literal(" - ").withStyle(ChatFormatting.DARK_GRAY)
+                .append(Component.literal(name).withStyle("host".equals(name)
+                        ? ChatFormatting.GOLD
+                        : ChatFormatting.AQUA))
+                .append(Component.literal("  "))
+                .append(flag(enabled, "enabled", "disabled"))
+                .append(Component.literal("  "))
+                .append(flag(running, "running", "stopped"))
+                .append(Component.literal("  "))
+                .append(Component.literal(players + " " + (players == 1 ? "player" : "players"))
+                        .withStyle(ChatFormatting.GRAY));
+    }
+
+    private static MutableComponent flag(boolean value, String trueText, String falseText) {
+        return Component.literal(value ? trueText : falseText)
+                .withStyle(value ? ChatFormatting.GREEN : ChatFormatting.RED);
     }
 
     private static int transferToTarget(CommandSourceStack source, IntegratedClusterController controller,
