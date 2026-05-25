@@ -1,6 +1,7 @@
 package fr.jeanney.mixin;
 
 import fr.jeanney.MultiFabricServer;
+import fr.jeanney.compat.DynmapCompat;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
@@ -40,6 +41,13 @@ public abstract class DynmapCompatMixins {
     private void multifabricserver$skipDynmapServerStartedOnChild(MinecraftServer server, CallbackInfo callbackInfo) {
         if (isClusterChildServer(server)) {
             callbackInfo.cancel();
+        }
+    }
+
+    @Inject(method = "serverStarted", at = @At("TAIL"), remap = false, require = 0)
+    private void multifabricserver$pruneOrphanedClusterWorlds(MinecraftServer server, CallbackInfo callbackInfo) {
+        if (!isClusterChildServer(server)) {
+            DynmapCompat.pruneOrphanedClusterWorlds(this, server);
         }
     }
 
@@ -117,9 +125,6 @@ abstract class DynmapFabricWorldClusterNamingMixin {
 
         ResourceKey<Level> dimensionKey = level.dimension();
         if (dimensionKey == Level.OVERWORLD) {
-            if (fallbackName != null && !fallbackName.isBlank()) {
-                return fallbackName;
-            }
             return nodeId;
         }
         if (dimensionKey == Level.NETHER) {
