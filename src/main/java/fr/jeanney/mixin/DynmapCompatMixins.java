@@ -62,6 +62,13 @@ abstract class DynmapFabricServerClusterPlayersMixin {
     @Shadow
     private MinecraftServer server;
 
+    @Inject(method = "tickEvent(Lnet/minecraft/server/MinecraftServer;)V", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
+    private void multifabricserver$skipDynmapTickOnChild(MinecraftServer tickingServer, CallbackInfo callbackInfo) {
+        if (MultiFabricServer.clusterController().isClusterChildServerForRuntime(tickingServer)) {
+            callbackInfo.cancel();
+        }
+    }
+
     @Redirect(method = "getOnlinePlayers", at = @At(value = "INVOKE", target = "Lnet/minecraft/server/players/PlayerList;getPlayers()Ljava/util/List;"), remap = false, require = 0)
     private List<ServerPlayer> multifabricserver$includeClusterPlayersForDynmap(PlayerList playerList) {
         List<ServerPlayer> aggregatedPlayers = MultiFabricServer.clusterController().dynmapOnlinePlayers(server);
