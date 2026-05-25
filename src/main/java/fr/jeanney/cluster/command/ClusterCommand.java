@@ -84,14 +84,8 @@ public final class ClusterCommand {
                         .then(Commands.argument("node", wordArgumentType())
                                 .executes(context -> {
                                     String node = StringArgumentType.getString(context, "node");
-                                    return addNode(context.getSource(), controller, node, node);
-                                })
-                                .then(Commands.argument("world", wordArgumentType())
-                                        .executes(context -> {
-                                            String node = StringArgumentType.getString(context, "node");
-                                            String world = StringArgumentType.getString(context, "world");
-                                            return addNode(context.getSource(), controller, node, world);
-                                        }))))
+                                    return addNode(context.getSource(), controller, node);
+                                })))
                 .then(Commands.literal("start")
                         .requires(ClusterCommand::hasNodeAdminPermission)
                         .then(Commands.argument("node", wordArgumentType())
@@ -102,9 +96,6 @@ public final class ClusterCommand {
                                     if (!started) {
                                         if (!controller.hasNode(node)) {
                                             context.getSource().sendFailure(Component.literal("Unknown node: " + node));
-                                        } else if (!controller.isConfigEnabled()) {
-                                            context.getSource().sendFailure(Component
-                                                    .literal("Cluster runtime is disabled (use /cluster enable)"));
                                         } else if (!controller.isNodeEnabled(node)) {
                                             context.getSource().sendFailure(Component.literal("Node is disabled: "
                                                     + node + " (use /cluster enable " + node + ")"));
@@ -120,15 +111,6 @@ public final class ClusterCommand {
                                 })))
                 .then(Commands.literal("enable")
                         .requires(ClusterCommand::hasNodeAdminPermission)
-                        .executes(context -> {
-                            boolean enabled = controller.setClusterEnabled(context.getSource().getServer(), true);
-                            if (!enabled) {
-                                context.getSource().sendFailure(Component.literal("Failed to enable cluster runtime"));
-                                return 0;
-                            }
-                            context.getSource().sendSuccess(() -> Component.literal("Cluster runtime enabled"), true);
-                            return 1;
-                        })
                         .then(Commands.argument("node", wordArgumentType())
                                 .suggests((context, builder) -> suggestNodes(controller, builder))
                                 .executes(context -> {
@@ -140,35 +122,13 @@ public final class ClusterCommand {
                                         return 0;
                                     }
 
-                                    boolean runtimeEnabled = controller.isConfigEnabled();
-                                    if (!runtimeEnabled) {
-                                        runtimeEnabled = controller.setClusterEnabled(context.getSource().getServer(),
-                                                true);
-                                    }
-
-                                    if (!runtimeEnabled) {
-                                        context.getSource().sendFailure(Component.literal(
-                                                "Enabled node '" + node + "' but failed to enable cluster runtime"));
-                                        return 0;
-                                    }
-
                                     context.getSource().sendSuccess(
-                                            () -> Component
-                                                    .literal("Enabled node: " + node + " (cluster runtime enabled)"),
+                                            () -> Component.literal("Enabled node: " + node),
                                             true);
                                     return 1;
                                 })))
                 .then(Commands.literal("disable")
                         .requires(ClusterCommand::hasNodeAdminPermission)
-                        .executes(context -> {
-                            boolean disabled = controller.setClusterEnabled(context.getSource().getServer(), false);
-                            if (!disabled) {
-                                context.getSource().sendFailure(Component.literal("Failed to disable cluster runtime"));
-                                return 0;
-                            }
-                            context.getSource().sendSuccess(() -> Component.literal("Cluster runtime disabled"), true);
-                            return 1;
-                        })
                         .then(Commands.argument("node", wordArgumentType())
                                 .suggests((context, builder) -> suggestNodes(controller, builder))
                                 .executes(context -> {
@@ -235,16 +195,10 @@ public final class ClusterCommand {
         return Objects.requireNonNull(StringArgumentType.word());
     }
 
-    private static int addNode(CommandSourceStack source, IntegratedClusterController controller, String node,
-            String world) {
+    private static int addNode(CommandSourceStack source, IntegratedClusterController controller, String node) {
         if (!IntegratedClusterController.isValidNodeName(node)) {
             source.sendFailure(Component.literal(
                     "Invalid cluster name. Use 1-64 characters: letters, numbers, dot, dash, underscore."));
-            return 0;
-        }
-        if (!IntegratedClusterController.isValidNodeName(world)) {
-            source.sendFailure(Component.literal(
-                    "Invalid world name. Use 1-64 characters: letters, numbers, dot, dash, underscore."));
             return 0;
         }
         if (controller.hasNode(node)) {
@@ -252,16 +206,14 @@ public final class ClusterCommand {
             return 0;
         }
 
-        boolean added = controller.addNode(source.getServer(), node, world);
+        boolean added = controller.addNode(source.getServer(), node);
         if (!added) {
             source.sendFailure(Component.literal("Failed to add cluster: " + node));
             return 0;
         }
 
         source.sendSuccess(() -> Component.literal("Added cluster ")
-                .append(Component.literal(node).withStyle(ChatFormatting.AQUA))
-                .append(Component.literal(" using world "))
-                .append(Component.literal(world).withStyle(ChatFormatting.GRAY)), true);
+                .append(Component.literal(node).withStyle(ChatFormatting.AQUA)), true);
         return 1;
     }
 
@@ -290,11 +242,6 @@ public final class ClusterCommand {
                 .append(Component.literal("  " + totalPlayers + " online")
                         .withStyle(ChatFormatting.GRAY)),
                 false);
-
-        if (!controller.isConfigEnabled()) {
-            source.sendSuccess(() -> Component.literal("Runtime disabled")
-                    .withStyle(ChatFormatting.RED), false);
-        }
 
         source.sendSuccess(() -> statusLine("host", true, true, countPlayers(controller, null)), false);
 
@@ -354,18 +301,13 @@ public final class ClusterCommand {
         }
         String playerName = player.getScoreboardName();
 
-        boolean useSeamlessProxySwitch = controller.isSeamlessProxySwitchEnabled()
-                || ProxyForwardingConfig.isFabricProxyLiteConfigured(source.getServer());
+        boolean useSeamlessProxySwitch = ProxyForwardingConfig.isFabricProxyLiteConfigured(source.getServer());
         int port;
         String host;
         String targetNodeId;
         if ("host".equalsIgnoreCase(target) || "main".equalsIgnoreCase(target)) {
             host = controller.hostTransferHost();
-            if (controller.isGatewayEnabled()) {
-                port = controller.gatewayBindPort();
-            } else {
-                port = controller.hostTransferPort();
-            }
+            port = controller.hostTransferPort();
             targetNodeId = null;
         } else {
             ClusterNodeRuntime runtime = controller.node(target).orElse(null);
@@ -379,14 +321,6 @@ public final class ClusterCommand {
                 return requestSeamlessSwitch(source, controller, player, playerName, target, target);
             }
             if (runtime.state() != ClusterNodeState.RUNNING) {
-                if (!controller.isConfigEnabled()) {
-                    return failTravel(
-                            source,
-                            playerName,
-                            target,
-                            "Cluster runtime is disabled (use /cluster enable)");
-                }
-
                 boolean started = controller.startNode(source.getServer(), target);
                 ClusterNodeRuntime refreshedRuntime = controller.node(target).orElse(runtime);
                 if (started && refreshedRuntime.state() == ClusterNodeState.STARTING
@@ -407,13 +341,8 @@ public final class ClusterCommand {
                 }
                 runtime = refreshedRuntime;
             }
-            if (controller.isGatewayEnabled()) {
-                host = controller.hostTransferHost();
-                port = controller.gatewayBindPort();
-            } else {
-                host = controller.runtimeTransferHost();
-                port = runtime.resolvedTransferPort();
-            }
+            host = controller.runtimeTransferHost();
+            port = runtime.resolvedTransferPort();
 
             if (port <= 0) {
                 return failTravel(
@@ -454,12 +383,10 @@ public final class ClusterCommand {
             String playerName,
             String target,
             String targetNodeId) {
-        if (!controller.isSeamlessProxySwitchEnabled()) {
-            MultiFabricServer.LOGGER.info(
-                    "Using seamless proxy switch for player '{}' to target '{}' because FabricProxy-Lite is configured",
-                    playerName,
-                    target);
-        }
+        MultiFabricServer.LOGGER.info(
+                "Using seamless proxy switch for player '{}' to target '{}' because FabricProxy-Lite is configured",
+                playerName,
+                target);
         boolean switched = controller.requestSeamlessProxyTravel(source.getServer(), player, targetNodeId);
         if (!switched) {
             return failTravel(source, playerName, target, "Seamless proxy switch failed for target: " + target);

@@ -72,9 +72,8 @@ public final class EmbeddedServerFactory {
             int listenPort = resolveListenPort(definition, nodeRoot);
 
             DedicatedServerSettings settings = prepareServerSettings(hostServer, nodeRoot, definition, listenPort);
-            LevelStorageSource levelStorageSource = LevelStorageSource.createDefault(
-                    Objects.requireNonNull(nodeRoot.resolve("universe")));
-            levelStorageAccess = levelStorageSource.createAccess(Objects.requireNonNull(definition.worldName()));
+            LevelStorageSource levelStorageSource = LevelStorageSource.createDefault(nodeRoot);
+            levelStorageAccess = levelStorageSource.createAccess(ClusterNodeDefinition.WORLD_NAME);
             PackRepository packRepository = ServerPacksSource.createPackRepository(levelStorageAccess);
             WorldStem worldStem = buildWorldStem(settings.getProperties(), levelStorageAccess, packRepository);
 
@@ -160,7 +159,7 @@ public final class EmbeddedServerFactory {
                 && readHostServerBooleanProperty(hostServer, "enforce-secure-profile", false);
         boolean acceptsTransfers = true;
 
-        properties.setProperty("level-name", definition.worldName());
+        properties.setProperty("level-name", ClusterNodeDefinition.WORLD_NAME);
         properties.setProperty("server-port", Integer.toString(listenPort));
         properties.setProperty("server-ip", "127.0.0.1");
         properties.setProperty("online-mode", Boolean.toString(onlineMode));

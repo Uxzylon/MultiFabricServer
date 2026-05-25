@@ -2,6 +2,7 @@ package fr.jeanney.cluster;
 
 import com.mojang.authlib.GameProfile;
 import fr.jeanney.MultiFabricServer;
+import fr.jeanney.compat.DynmapCompat;
 import fr.jeanney.cluster.network.ClusterRegisterPayload;
 import fr.jeanney.cluster.network.ProxyConnectPayload;
 import io.netty.buffer.Unpooled;
@@ -26,10 +27,12 @@ import net.minecraft.world.level.storage.LevelResource;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
@@ -75,19 +78,13 @@ public final class IntegratedClusterController {
     private final Map<String, InternalTravelMarker> pendingInternalTravelMarkersByPlayer = new LinkedHashMap<>();
     private final Map<String, ExternalLifecycleSuppressionMarker> pendingExternalLifecycleSuppressionsByPlayer = new LinkedHashMap<>();
     private final Map<String, DynmapLogoutSuppressionMarker> pendingDynmapLogoutSuppressionsByPlayer = new LinkedHashMap<>();
+    private final Set<String> pendingRuntimeDirectoryDeletes = new LinkedHashSet<>();
 
     private boolean initialized;
-    private boolean configEnabled;
     private Path clusterRuntimeRoot;
     private volatile MinecraftServer ownerServer;
     private volatile boolean stopping;
-    private boolean gatewayEnabled;
-    private boolean seamlessProxySwitchEnabled;
-    private String proxyHostServerName = ClusterConfig.DEFAULT_PROXY_HOST_SERVER_NAME;
-    private String transferHost = ClusterConfig.DEFAULT_TRANSFER_HOST;
-    private String gatewayBindHost = ClusterConfig.DEFAULT_GATEWAY_BIND_HOST;
-    private int gatewayBindPort = ClusterConfig.DEFAULT_GATEWAY_BIND_PORT;
-    private long nodeIdleStopMillis = TimeUnit.SECONDS.toMillis(300);
+    private long nodeIdleStopMillis = TimeUnit.SECONDS.toMillis(ClusterConfig.DEFAULT_NODE_IDLE_STOP_SECONDS);
     private ClusterConfig configSnapshot = ClusterConfig.defaultConfig();
     private long nextNodeIdleCheckMillis;
 
@@ -222,11 +219,10 @@ public final class IntegratedClusterController {
 
         synchronized (this) {
             MultiFabricServer.LOGGER.info(
-                    "[cluster-stop-debug] onServerStopping server={} owner={} initialized={} configEnabled={} nodes={} stopping={} thread={}",
+                    "[cluster-stop-debug] onServerStopping server={} owner={} initialized={} nodes={} stopping={} thread={}",
                     describeServer(server),
                     describeServer(ownerServer),
                     initialized,
-                    configEnabled,
                     runtimes.size(),
                     stopping,
                     Thread.currentThread().getName());
@@ -299,7 +295,6 @@ public final class IntegratedClusterController {
             }
 
             initialized = false;
-            configEnabled = false;
             stopping = false;
             sharedPlayerPresences.clear();
             runtimeServerInstances.clear();
@@ -328,10 +323,15 @@ public final class IntegratedClusterController {
 
         if (initialized) {
             Set<String> delayedStops = new LinkedHashSet<>(stoppingNodeIds);
+            Set<String> directoryDeletes = new LinkedHashSet<>(pendingRuntimeDirectoryDeletes);
             for (ClusterNodeRuntime runtime : runtimes.values()) {
                 String nodeId = runtime.definition().id();
                 long stopDelayMillis = delayedStops.contains(nodeId) ? NODE_EVACUATION_SETTLE_MILLIS : 0L;
-                scheduleRuntimeStop(nodeId, runtime, stopDelayMillis);
+                Path directoryToDelete = directoryDeletes.contains(nodeId)
+                        ? runtimeRoot(server).resolve(nodeId)
+                        : null;
+                scheduleRuntimeStop(nodeId, runtime, stopDelayMillis, directoryToDelete);
+                pendingRuntimeDirectoryDeletes.remove(nodeId);
             }
         }
 
@@ -340,13 +340,6 @@ public final class IntegratedClusterController {
         pruneExpiredInternalTravelMarkers();
 
         ClusterConfig config = ClusterConfigLoader.load(server);
-        configEnabled = config.enabled();
-        gatewayEnabled = config.gatewayEnabled();
-        seamlessProxySwitchEnabled = config.seamlessProxySwitchEnabled();
-        proxyHostServerName = config.proxyHostServerName();
-        transferHost = config.transferHost();
-        gatewayBindHost = config.gatewayBindHost();
-        gatewayBindPort = config.gatewayBindPort();
         nodeIdleStopMillis = TimeUnit.SECONDS.toMillis(Math.max(0, config.nodeIdleStopSeconds()));
         configSnapshot = config;
         clusterRuntimeRoot = server.getWorldPath(LevelResource.ROOT).resolve("cluster-runtime");
@@ -368,11 +361,15 @@ public final class IntegratedClusterController {
         });
         activeNodeIds.clear();
 
+        for (String nodeId : List.copyOf(pendingRuntimeDirectoryDeletes)) {
+            scheduleRuntimeDirectoryDelete(nodeId, runtimeRoot(server).resolve(nodeId), 0L);
+            pendingRuntimeDirectoryDeletes.remove(nodeId);
+        }
+
         initialized = true;
 
         MultiFabricServer.LOGGER.info(
-                "Integrated cluster config reloaded. enabled={}, nodes={} (lazy startup mode)",
-                configEnabled,
+                "Integrated cluster config reloaded. nodes={} (lazy startup mode)",
                 runtimes.size());
 
         persistRuntimeState(server);
@@ -422,10 +419,6 @@ public final class IntegratedClusterController {
         }
 
         if (stopping) {
-            return false;
-        }
-
-        if (!configEnabled) {
             return false;
         }
 
@@ -482,35 +475,6 @@ public final class IntegratedClusterController {
         return true;
     }
 
-    public synchronized boolean setClusterEnabled(MinecraftServer server, boolean enabled) {
-        MinecraftServer controlServer = resolveControlServer(server);
-        if (controlServer == null) {
-            return false;
-        }
-
-        if (configSnapshot.enabled() == enabled) {
-            return true;
-        }
-
-        if (!enabled) {
-            activeNodeIds.clear();
-        }
-
-        ClusterConfig updatedConfig = new ClusterConfig(
-                enabled,
-                configSnapshot.gatewayEnabled(),
-                configSnapshot.seamlessProxySwitchEnabled(),
-                configSnapshot.proxyHostServerName(),
-                configSnapshot.transferHost(),
-                configSnapshot.gatewayBindHost(),
-                configSnapshot.gatewayBindPort(),
-                configSnapshot.nodeIdleStopSeconds(),
-                configSnapshot.nodes());
-        ClusterConfigLoader.save(controlServer, updatedConfig);
-        reloadFromDiskInternal(controlServer);
-        return configEnabled == enabled;
-    }
-
     public synchronized boolean setNodeEnabled(MinecraftServer server, String nodeId, boolean enabled) {
         MinecraftServer controlServer = resolveControlServer(server);
         if (controlServer == null) {
@@ -526,11 +490,7 @@ public final class IntegratedClusterController {
             }
 
             found = true;
-            updatedNodes.add(new ClusterNodeDefinition(
-                    node.id(),
-                    node.worldName(),
-                    enabled,
-                    node.proxyServerName()));
+            updatedNodes.add(new ClusterNodeDefinition(node.id(), enabled));
         }
 
         if (!found) {
@@ -548,13 +508,7 @@ public final class IntegratedClusterController {
         }
 
         ClusterConfig updatedConfig = new ClusterConfig(
-                configSnapshot.enabled(),
-                configSnapshot.gatewayEnabled(),
-                configSnapshot.seamlessProxySwitchEnabled(),
                 configSnapshot.proxyHostServerName(),
-                configSnapshot.transferHost(),
-                configSnapshot.gatewayBindHost(),
-                configSnapshot.gatewayBindPort(),
                 configSnapshot.nodeIdleStopSeconds(),
                 List.copyOf(updatedNodes));
         ClusterConfigLoader.save(controlServer, updatedConfig);
@@ -562,29 +516,22 @@ public final class IntegratedClusterController {
         return true;
     }
 
-    public synchronized boolean addNode(MinecraftServer server, String nodeId, String worldName) {
+    public synchronized boolean addNode(MinecraftServer server, String nodeId) {
         MinecraftServer controlServer = resolveControlServer(server);
         if (controlServer == null) {
             return false;
         }
 
         String normalizedNodeId = normalizeNodeName(nodeId);
-        String normalizedWorldName = normalizeNodeName(worldName);
-        if (normalizedNodeId == null || normalizedWorldName == null || runtimes.containsKey(normalizedNodeId)) {
+        if (normalizedNodeId == null || runtimes.containsKey(normalizedNodeId)) {
             return false;
         }
 
         List<ClusterNodeDefinition> updatedNodes = new ArrayList<>(configSnapshot.nodes());
-        updatedNodes.add(new ClusterNodeDefinition(normalizedNodeId, normalizedWorldName, true, ""));
+        updatedNodes.add(new ClusterNodeDefinition(normalizedNodeId, true));
 
         ClusterConfig updatedConfig = new ClusterConfig(
-                configSnapshot.enabled(),
-                configSnapshot.gatewayEnabled(),
-                configSnapshot.seamlessProxySwitchEnabled(),
                 configSnapshot.proxyHostServerName(),
-                configSnapshot.transferHost(),
-                configSnapshot.gatewayBindHost(),
-                configSnapshot.gatewayBindPort(),
                 configSnapshot.nodeIdleStopSeconds(),
                 List.copyOf(updatedNodes));
         ClusterConfigLoader.save(controlServer, updatedConfig);
@@ -620,15 +567,11 @@ public final class IntegratedClusterController {
         clearPlayerAffinitiesForNode(nodeId);
         runtimeServerInstances.remove(nodeId);
         sharedPlayerPresences.entrySet().removeIf(entry -> nodeId.equals(entry.getValue().nodeId()));
+        pendingRuntimeDirectoryDeletes.add(nodeId);
+        DynmapCompat.removeClusterWorlds(nodeId);
 
         ClusterConfig updatedConfig = new ClusterConfig(
-                configSnapshot.enabled(),
-                configSnapshot.gatewayEnabled(),
-                configSnapshot.seamlessProxySwitchEnabled(),
                 configSnapshot.proxyHostServerName(),
-                configSnapshot.transferHost(),
-                configSnapshot.gatewayBindHost(),
-                configSnapshot.gatewayBindPort(),
                 configSnapshot.nodeIdleStopSeconds(),
                 List.copyOf(updatedNodes));
         ClusterConfigLoader.save(controlServer, updatedConfig);
@@ -708,7 +651,7 @@ public final class IntegratedClusterController {
         refreshSharedTabLists();
         scheduleDeferredSharedTabRefresh(server);
 
-        if (configEnabled && !suppressJoinMessage) {
+        if (!suppressJoinMessage) {
             broadcastSharedLifecycleMessage(
                     Component.literal(playerName + " joined the game").withStyle(ChatFormatting.YELLOW));
         }
@@ -718,7 +661,7 @@ public final class IntegratedClusterController {
             return;
         }
 
-        if (server != ownerServer || !configEnabled) {
+        if (server != ownerServer) {
             return;
         }
 
@@ -735,12 +678,10 @@ public final class IntegratedClusterController {
         }
 
         if (shouldUseProxySwitch(server)) {
-            if (!seamlessProxySwitchEnabled) {
-                MultiFabricServer.LOGGER.info(
-                        "Restoring player {} to cluster {} through proxy switch because FabricProxy-Lite is configured",
-                        playerName,
-                        targetNodeId);
-            }
+            MultiFabricServer.LOGGER.info(
+                    "Restoring player {} to cluster {} through proxy switch because FabricProxy-Lite is configured",
+                    playerName,
+                    targetNodeId);
             if (!requestSeamlessProxyTravel(server, player, targetNodeId)) {
                 MultiFabricServer.LOGGER.warn(
                         "Seamless proxy restore failed for player {} to node {}",
@@ -766,9 +707,8 @@ public final class IntegratedClusterController {
             return;
         }
 
-        String transferHost = gatewayEnabled ? hostTransferHost() : runtimeTransferHost();
-        int transferPort = gatewayEnabled ? gatewayBindPort() : runtime.resolvedTransferPort();
-        server.execute(() -> executeTransfer(server, player, transferHost, transferPort, targetNodeId));
+        server.execute(() -> executeTransfer(server, player, runtimeTransferHost(), runtime.resolvedTransferPort(),
+                targetNodeId));
     }
 
     public synchronized void onPlayerDisconnect(MinecraftServer server, ServerPlayer player) {
@@ -786,7 +726,7 @@ public final class IntegratedClusterController {
         refreshSharedTabLists();
         scheduleDeferredSharedTabRefresh(server);
 
-        if (configEnabled && !suppressDisconnectMessage) {
+        if (!suppressDisconnectMessage) {
             broadcastSharedLifecycleMessage(
                     Component.literal(player.getScoreboardName() + " left the game")
                             .withStyle(ChatFormatting.YELLOW));
@@ -830,32 +770,16 @@ public final class IntegratedClusterController {
         refreshSharedTabLists();
     }
 
-    public synchronized void configureSingleNodeForTesting(MinecraftServer server,
-            String nodeId,
-            String worldName,
-            boolean gatewayEnabled) {
+    public synchronized void configureSingleNodeForTesting(MinecraftServer server, String nodeId) {
         ownerServer = server;
         initialized = true;
         stopping = false;
-        configEnabled = true;
-        this.gatewayEnabled = gatewayEnabled;
-        seamlessProxySwitchEnabled = false;
-        proxyHostServerName = ClusterConfig.DEFAULT_PROXY_HOST_SERVER_NAME;
-        transferHost = ClusterConfig.DEFAULT_TRANSFER_HOST;
-        gatewayBindHost = ClusterConfig.DEFAULT_GATEWAY_BIND_HOST;
-        gatewayBindPort = ClusterConfig.DEFAULT_GATEWAY_BIND_PORT;
-        nodeIdleStopMillis = TimeUnit.SECONDS.toMillis(300);
+        nodeIdleStopMillis = TimeUnit.SECONDS.toMillis(ClusterConfig.DEFAULT_NODE_IDLE_STOP_SECONDS);
         clusterRuntimeRoot = server.getWorldPath(LevelResource.ROOT).resolve("cluster-runtime");
 
-        ClusterNodeDefinition node = new ClusterNodeDefinition(nodeId, worldName, true, nodeId);
+        ClusterNodeDefinition node = new ClusterNodeDefinition(nodeId, true);
         configSnapshot = new ClusterConfig(
-                true,
-                gatewayEnabled,
-                false,
-                proxyHostServerName,
-                transferHost,
-                gatewayBindHost,
-                gatewayBindPort,
+                ClusterConfig.DEFAULT_PROXY_HOST_SERVER_NAME,
                 (int) TimeUnit.MILLISECONDS.toSeconds(nodeIdleStopMillis),
                 List.of(node));
 
@@ -926,10 +850,6 @@ public final class IntegratedClusterController {
         return initialized;
     }
 
-    public synchronized boolean isConfigEnabled() {
-        return configEnabled;
-    }
-
     public synchronized int onlinePlayers(MinecraftServer hostServer) {
         MinecraftServer effectiveServer = resolveControlServer(hostServer);
         if (effectiveServer == null) {
@@ -946,7 +866,7 @@ public final class IntegratedClusterController {
     }
 
     public synchronized String hostTransferHost() {
-        return transferHost;
+        return ClusterConfig.DEFAULT_TRANSFER_HOST;
     }
 
     public synchronized int hostTransferPort() {
@@ -955,10 +875,6 @@ public final class IntegratedClusterController {
 
     public synchronized String runtimeTransferHost() {
         return LOOPBACK_HOST;
-    }
-
-    public synchronized boolean isGatewayEnabled() {
-        return gatewayEnabled;
     }
 
     public synchronized List<ServerPlayer> dynmapOnlinePlayers(MinecraftServer hostServer) {
@@ -970,16 +886,34 @@ public final class IntegratedClusterController {
         Map<UUID, ServerPlayer> playersByUuid = new LinkedHashMap<>();
 
         addPlayersFromServer(playersByUuid, effectiveHostServer);
+        for (MinecraftServer runtimeServer : runtimeServerInstances.values()) {
+            addPlayersFromServer(playersByUuid, runtimeServer);
+        }
 
         return List.copyOf(playersByUuid.values());
     }
 
-    public synchronized boolean isSeamlessProxySwitchEnabled() {
-        return seamlessProxySwitchEnabled;
-    }
+    public synchronized boolean shouldPruneDynmapSavedWorld(
+            MinecraftServer hostServer,
+            String worldName,
+            String worldTitle,
+            boolean loaded) {
+        if (loaded || worldName == null || worldName.isBlank()) {
+            return false;
+        }
 
-    public synchronized String proxyHostServerName() {
-        return proxyHostServerName;
+        String normalizedWorldName = worldName.toLowerCase(Locale.ROOT);
+        if (hostDynmapWorldNames(hostServer).contains(normalizedWorldName)) {
+            return false;
+        }
+
+        String clusterId = dynmapClusterIdFromWorldName(normalizedWorldName);
+        ClusterNodeRuntime runtime = runtimes.get(clusterId);
+        if (runtime != null && runtime.definition().enabled()) {
+            return false;
+        }
+
+        return looksLikeClusterDynmapWorld(normalizedWorldName, worldTitle);
     }
 
     public synchronized long nodeIdleStopSeconds() {
@@ -987,7 +921,7 @@ public final class IntegratedClusterController {
     }
 
     public synchronized boolean allowGameMessage(MinecraftServer server, Component message, boolean overlay) {
-        if (overlay || !initialized || !configEnabled) {
+        if (overlay || !initialized) {
             return true;
         }
 
@@ -1002,7 +936,7 @@ public final class IntegratedClusterController {
         String sourceCluster;
         List<MinecraftServer> targets;
         synchronized (this) {
-            if (!initialized || !configEnabled || ownerServer == null) {
+            if (!initialized || ownerServer == null) {
                 return;
             }
 
@@ -1037,20 +971,12 @@ public final class IntegratedClusterController {
         }
     }
 
-    public synchronized String gatewayBindHost() {
-        return gatewayBindHost;
-    }
-
-    public synchronized int gatewayBindPort() {
-        return gatewayBindPort;
-    }
-
     public synchronized boolean isOwnerServer(MinecraftServer server) {
         return server == ownerServer;
     }
 
     public synchronized Optional<GatewayRoute> resolveGatewayRoute(String requestedHost, String playerUuid) {
-        if (!gatewayEnabled || ownerServer == null) {
+        if (ownerServer == null) {
             return Optional.empty();
         }
 
@@ -1111,7 +1037,7 @@ public final class IntegratedClusterController {
         String renderedLine;
         List<MinecraftServer> targets;
         synchronized (this) {
-            if (!initialized || !configEnabled || ownerServer == null) {
+            if (!initialized || ownerServer == null) {
                 return;
             }
 
@@ -1143,7 +1069,7 @@ public final class IntegratedClusterController {
         String sourceCluster;
         List<MinecraftServer> targets;
         synchronized (this) {
-            if (!initialized || !configEnabled || ownerServer == null) {
+            if (!initialized || ownerServer == null) {
                 return;
             }
 
@@ -1174,7 +1100,7 @@ public final class IntegratedClusterController {
         String sourceCluster;
         List<MinecraftServer> targets;
         synchronized (this) {
-            if (!initialized || !configEnabled || ownerServer == null) {
+            if (!initialized || ownerServer == null) {
                 return;
             }
 
@@ -1578,12 +1504,6 @@ public final class IntegratedClusterController {
 
         MinecraftServer controlServer = resolveControlServer(server);
 
-        if (gatewayEnabled) {
-            MultiFabricServer.LOGGER.warn(
-                    "Seamless proxy switch requires an external proxy. Disable gatewayEnabled before using seamlessProxySwitchEnabled.");
-            return false;
-        }
-
         if (targetNodeId == null || targetNodeId.isBlank()) {
             String playerUuid = player.getUUID().toString();
             String previousAffinity = playerClusterAffinities.get(playerUuid);
@@ -1592,7 +1512,12 @@ public final class IntegratedClusterController {
             // disconnect handling cannot immediately restore the previous cluster affinity.
             preparePlayerHostTravel(server, playerUuid);
 
-            boolean switched = executeSeamlessProxyTravel(server, player, null, proxyHostServerName, true);
+            boolean switched = executeSeamlessProxyTravel(
+                    server,
+                    player,
+                    null,
+                    configSnapshot.proxyHostServerName(),
+                    true);
             if (!switched) {
                 forceHostRoutePlayerUuids.remove(playerUuid);
                 if (previousAffinity != null && !previousAffinity.isBlank()) {
@@ -1603,17 +1528,13 @@ public final class IntegratedClusterController {
 
             return switched;
         }
-        if (!configEnabled) {
-            return false;
-        }
-
         ClusterNodeRuntime runtime = runtimes.get(targetNodeId);
         if (runtime == null || !runtime.definition().enabled()) {
             return false;
         }
 
         String proxyServerName = resolveProxyServerName(runtime.definition());
-        logProxyTargetRequirement(player, targetNodeId, runtime.definition(), proxyServerName);
+        logProxyTargetRequirement(player, targetNodeId, proxyServerName);
 
         if (runtime.state() != ClusterNodeState.RUNNING) {
             MinecraftServer startupHost = controlServer != null ? controlServer : server;
@@ -1659,7 +1580,7 @@ public final class IntegratedClusterController {
         }
 
         synchronized (this) {
-            if (stopping || !configEnabled) {
+            if (stopping) {
                 return false;
             }
 
@@ -1793,12 +1714,11 @@ public final class IntegratedClusterController {
     }
 
     private boolean shouldUseProxySwitch(MinecraftServer server) {
-        return seamlessProxySwitchEnabled || ProxyForwardingConfig.isFabricProxyLiteConfigured(server);
+        return ProxyForwardingConfig.isFabricProxyLiteConfigured(server);
     }
 
     private static void logProxyTargetRequirement(ServerPlayer player,
             String targetNodeId,
-            ClusterNodeDefinition definition,
             String proxyServerName) {
         String playerName = player == null ? "unknown" : player.getScoreboardName();
         MultiFabricServer.LOGGER.info(
@@ -1806,14 +1726,6 @@ public final class IntegratedClusterController {
                 playerName,
                 targetNodeId,
                 proxyServerName);
-
-        if (definition != null && (definition.proxyServerName() == null || definition.proxyServerName().isBlank())) {
-            MultiFabricServer.LOGGER.warn(
-                    "Cluster '{}' has no explicit proxyServerName; using '{}' as the Velocity/Bungee target. "
-                            + "That server name must be registered in the proxy, otherwise the proxy will reject the switch.",
-                    targetNodeId,
-                    proxyServerName);
-        }
     }
 
     private void scheduleSeamlessProxyTravelWhenReady(MinecraftServer server,
@@ -2003,11 +1915,6 @@ public final class IntegratedClusterController {
             return null;
         }
 
-        String configured = definition.proxyServerName();
-        if (configured != null && !configured.isBlank()) {
-            return configured;
-        }
-
         return definition.id();
     }
 
@@ -2072,8 +1979,8 @@ public final class IntegratedClusterController {
         }
 
         boolean useProxySwitch = shouldUseProxySwitch(runtimeServer);
-        String proxyTarget = proxyHostServerName;
-        String targetHost = transferHost;
+        String proxyTarget = configSnapshot.proxyHostServerName();
+        String targetHost = ClusterConfig.DEFAULT_TRANSFER_HOST;
         int targetPort = ownerServer == null ? 25565 : ownerServer.getPort();
 
         runtimeServer.execute(() -> {
@@ -2090,6 +1997,14 @@ public final class IntegratedClusterController {
     }
 
     private void scheduleRuntimeStop(String nodeId, ClusterNodeRuntime runtime, long delayMillis) {
+        scheduleRuntimeStop(nodeId, runtime, delayMillis, null);
+    }
+
+    private void scheduleRuntimeStop(
+            String nodeId,
+            ClusterNodeRuntime runtime,
+            long delayMillis,
+            Path runtimeDirectoryToDelete) {
         if (runtime == null) {
             return;
         }
@@ -2106,7 +2021,84 @@ public final class IntegratedClusterController {
                         }
                     }
                     runtime.stop();
+                    if (runtimeDirectoryToDelete != null) {
+                        deleteRuntimeDirectory(nodeId, runtimeDirectoryToDelete);
+                    }
                 });
+    }
+
+    private void scheduleRuntimeDirectoryDelete(String nodeId, Path nodeRoot, long delayMillis) {
+        if (nodeRoot == null) {
+            return;
+        }
+
+        Thread.ofVirtual()
+                .name("MultiFabricServer cluster directory deleter " + nodeId)
+                .start(() -> {
+                    if (delayMillis > 0L) {
+                        try {
+                            Thread.sleep(delayMillis);
+                        } catch (InterruptedException interruptedException) {
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
+                    }
+                    deleteRuntimeDirectory(nodeId, nodeRoot);
+                });
+    }
+
+    private void deleteRuntimeDirectory(String nodeId, Path nodeRoot) {
+        Path target = nodeRoot.toAbsolutePath().normalize();
+        Path runtimeRoot = clusterRuntimeRoot == null ? target.getParent() : clusterRuntimeRoot;
+        if (runtimeRoot == null) {
+            MultiFabricServer.LOGGER.warn("Refusing to delete cluster runtime directory without known root: {}",
+                    target);
+            return;
+        }
+
+        Path root = runtimeRoot.toAbsolutePath().normalize();
+        if (!target.startsWith(root) || target.equals(root)) {
+            MultiFabricServer.LOGGER.warn("Refusing to delete cluster runtime directory outside cluster root: {}",
+                    target);
+            return;
+        }
+
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                if (!Files.exists(target)) {
+                    return;
+                }
+
+                try (var paths = Files.walk(target)) {
+                    paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (IOException ioException) {
+                            throw new RuntimeException(ioException);
+                        }
+                    });
+                }
+
+                MultiFabricServer.LOGGER.info("Deleted cluster runtime directory for '{}': {}", nodeId, target);
+                return;
+            } catch (RuntimeException | IOException exception) {
+                if (attempt == 3) {
+                    MultiFabricServer.LOGGER.warn(
+                            "Failed to delete cluster runtime directory for '{}' at {}",
+                            nodeId,
+                            target,
+                            exception);
+                    return;
+                }
+
+                try {
+                    Thread.sleep(500L * attempt);
+                } catch (InterruptedException interruptedException) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
     }
 
     private void scheduleStoppingNodeMarkerClear(String nodeId, long delayMillis) {
@@ -2308,6 +2300,63 @@ public final class IntegratedClusterController {
 
             sink.putIfAbsent(player.getUUID(), player);
         }
+    }
+
+    private Set<String> hostDynmapWorldNames(MinecraftServer hostServer) {
+        LinkedHashSet<String> names = new LinkedHashSet<>();
+        names.add("world");
+        names.add("dim-1");
+        names.add("dim1");
+
+        if (hostServer == null) {
+            return names;
+        }
+
+        try {
+            String levelName = hostServer.getWorldData().getLevelName();
+            if (levelName != null && !levelName.isBlank()) {
+                names.add(levelName.toLowerCase(Locale.ROOT));
+            }
+        } catch (Exception ignored) {
+        }
+
+        return names;
+    }
+
+    private static String dynmapClusterIdFromWorldName(String worldName) {
+        if (worldName == null || worldName.isBlank()) {
+            return "";
+        }
+
+        if (worldName.endsWith("_the_end")) {
+            return worldName.substring(0, worldName.length() - "_the_end".length());
+        }
+        if (worldName.endsWith("_nether")) {
+            return worldName.substring(0, worldName.length() - "_nether".length());
+        }
+
+        int customDimensionSeparator = worldName.indexOf("__");
+        if (customDimensionSeparator > 0) {
+            return worldName.substring(0, customDimensionSeparator);
+        }
+
+        return worldName;
+    }
+
+    private static boolean looksLikeClusterDynmapWorld(String worldName, String worldTitle) {
+        if (worldName.endsWith("_nether") || worldName.endsWith("_the_end") || worldName.contains("__")) {
+            return true;
+        }
+
+        if (worldTitle == null || worldTitle.isBlank()) {
+            return false;
+        }
+
+        String normalizedTitle = worldTitle.toLowerCase(Locale.ROOT);
+        return normalizedTitle.equals(worldName + " (overworld)")
+                || normalizedTitle.equals(worldName + " (nether)")
+                || normalizedTitle.equals(worldName + " (end)")
+                || normalizedTitle.startsWith(worldName + " (minecraft:");
     }
 
     private void handlePlayerDisconnect(MinecraftServer server, String playerUuid, String playerName, String nodeId) {

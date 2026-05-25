@@ -2,6 +2,7 @@ package fr.jeanney;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import fr.jeanney.cluster.ClusterConfig;
 import fr.jeanney.cluster.ClusterPlayerPresence;
 import fr.jeanney.cluster.IntegratedClusterController;
@@ -35,27 +36,21 @@ public final class ClusterRuntimeGameTests {
     }
 
     @GameTest(maxTicks = 4000)
-    public void nodeEnableCommandAlsoEnablesClusterRuntime(GameTestHelper helper) {
+    public void nodeEnableCommandKeepsNodeLazy(GameTestHelper helper) {
         MinecraftServer server = helper.getLevel().getServer();
         var controller = MultiFabricServer.clusterController();
 
         Path configPath = server.getWorldPath(LevelResource.ROOT).resolve("multifabricserver-cluster.json");
         String nodeId = "testnode";
-        String worldName = "testnode_world";
 
         try {
-            writeConfig(configPath, false, new NodeSpec(nodeId, worldName, false));
+            writeConfig(configPath, new NodeSpec(nodeId, false));
         } catch (IOException ioException) {
             helper.fail("Failed to write cluster config for test: " + ioException.getMessage());
             return;
         }
 
         controller.reloadFromDisk(server);
-
-        if (controller.isConfigEnabled()) {
-            helper.fail("Cluster runtime should be disabled before running node enable command");
-            return;
-        }
 
         int commandResult;
         try {
@@ -68,11 +63,6 @@ public final class ClusterRuntimeGameTests {
         }
         if (commandResult <= 0) {
             helper.fail("cluster enable <node> command had no effect");
-            return;
-        }
-
-        if (!controller.isConfigEnabled()) {
-            helper.fail("cluster enable <node> should enable the cluster runtime");
             return;
         }
 
@@ -104,10 +94,9 @@ public final class ClusterRuntimeGameTests {
 
         Path configPath = server.getWorldPath(LevelResource.ROOT).resolve("multifabricserver-cluster.json");
         String nodeId = "cmdnode";
-        String worldName = "cmdworld";
 
         try {
-            writeConfig(configPath, true);
+            writeConfig(configPath);
         } catch (IOException ioException) {
             helper.fail("Failed to write cluster config for test: " + ioException.getMessage());
             return;
@@ -118,7 +107,7 @@ public final class ClusterRuntimeGameTests {
         int commandResult;
         try {
             commandResult = server.getCommands().getDispatcher().execute(
-                    "cluster add " + nodeId + " " + worldName,
+                    "cluster add " + nodeId,
                     server.createCommandSourceStack());
         } catch (Exception exception) {
             helper.fail("cluster add command failed: " + exception.getMessage());
@@ -137,7 +126,7 @@ public final class ClusterRuntimeGameTests {
         }
 
         var runtime = runtimeOpt.get();
-        if (!worldName.equals(runtime.definition().worldName())) {
+        if (!"world".equals(runtime.definition().worldName())) {
             helper.fail("Added node world mismatch, got " + runtime.definition().worldName());
             return;
         }
@@ -147,6 +136,33 @@ public final class ClusterRuntimeGameTests {
         }
         if (runtime.state() != ClusterNodeState.STOPPED) {
             helper.fail("Added node should remain lazy/stopped, got " + runtime.state());
+            return;
+        }
+        try {
+            JsonObject root = JsonParser.parseString(Files.readString(configPath, StandardCharsets.UTF_8))
+                    .getAsJsonObject();
+            if (root.has("enabled")
+                    || root.has("gatewayEnabled")
+                    || root.has("seamlessProxySwitchEnabled")
+                    || root.has("transferHost")
+                    || root.has("gatewayBindHost")
+                    || root.has("gatewayBindPort")) {
+                helper.fail("Saved cluster config should only contain compact runtime settings");
+                return;
+            }
+            if (!ClusterConfig.DEFAULT_PROXY_HOST_SERVER_NAME.equals(root.get("proxyHostServerName").getAsString())) {
+                helper.fail("Saved cluster config should keep proxyHostServerName");
+                return;
+            }
+
+            JsonArray nodes = root.getAsJsonArray("nodes");
+            JsonObject node = nodes.get(0).getAsJsonObject();
+            if (node.has("worldName") || node.has("proxyServerName")) {
+                helper.fail("Saved node config should only contain id/enabled");
+                return;
+            }
+        } catch (Exception exception) {
+            helper.fail("Failed to inspect saved node config: " + exception.getMessage());
             return;
         }
 
@@ -160,12 +176,11 @@ public final class ClusterRuntimeGameTests {
 
         Path configPath = server.getWorldPath(LevelResource.ROOT).resolve("multifabricserver-cluster.json");
         String nodeId = "testnode";
-        String worldName = "testnode_world";
         String hostName = "gateway.test";
         String playerUuid = "00000000-0000-0000-0000-000000000123";
 
         try {
-            writeConfig(configPath, true, true, new NodeSpec(nodeId, worldName, true));
+            writeConfig(configPath, new NodeSpec(nodeId, true));
         } catch (IOException ioException) {
             helper.fail("Failed to write cluster config for test: " + ioException.getMessage());
             return;
@@ -207,7 +222,7 @@ public final class ClusterRuntimeGameTests {
         String secondPlayerUuid = "00000000-0000-0000-0000-000000000212";
 
         try {
-            writeConfig(configPath, true, true, new NodeSpec(nodeId, "testnode_world", true));
+            writeConfig(configPath, new NodeSpec(nodeId, true));
         } catch (IOException ioException) {
             helper.fail("Failed to write cluster config for test: " + ioException.getMessage());
             return;
@@ -257,11 +272,14 @@ public final class ClusterRuntimeGameTests {
 
         Path configPath = server.getWorldPath(LevelResource.ROOT).resolve("multifabricserver-cluster.json");
         String nodeId = "removenode";
+        Path nodeRoot = server.getWorldPath(LevelResource.ROOT).resolve("cluster-runtime").resolve(nodeId);
         String firstPlayerUuid = "00000000-0000-0000-0000-000000000221";
         String secondPlayerUuid = "00000000-0000-0000-0000-000000000222";
 
         try {
-            writeConfig(configPath, true, true, new NodeSpec(nodeId, "removenode_world", true));
+            writeConfig(configPath, new NodeSpec(nodeId, true));
+            Files.createDirectories(nodeRoot.resolve("world"));
+            Files.writeString(nodeRoot.resolve("server.properties"), "level-name=world\n", StandardCharsets.UTF_8);
         } catch (IOException ioException) {
             helper.fail("Failed to write cluster config for test: " + ioException.getMessage());
             return;
@@ -297,7 +315,11 @@ public final class ClusterRuntimeGameTests {
         controller.onPlayerDisconnectFromNodeForTesting(server, secondPlayerUuid, nodeId);
         assertNodeEvacuated(helper, controller, nodeId, firstPlayerUuid, secondPlayerUuid);
 
-        helper.succeed();
+        helper.succeedWhen(() -> {
+            if (Files.exists(nodeRoot)) {
+                helper.fail("Removed node runtime directory should be deleted: " + nodeRoot);
+            }
+        });
     }
 
     @GameTest(maxTicks = 4000)
@@ -308,7 +330,7 @@ public final class ClusterRuntimeGameTests {
         String firstPlayerUuid = "00000000-0000-0000-0000-000000000231";
         String secondPlayerUuid = "00000000-0000-0000-0000-000000000232";
 
-        controller.configureSingleNodeForTesting(server, nodeId, "stopnode_world", true);
+        controller.configureSingleNodeForTesting(server, nodeId);
         controller.rememberPlayerCluster(server, firstPlayerUuid, nodeId);
         controller.rememberPlayerCluster(server, secondPlayerUuid, nodeId);
         controller.upsertSharedPlayerPresenceForTesting(firstPlayerUuid, "FirstPlayer", nodeId);
@@ -408,6 +430,49 @@ public final class ClusterRuntimeGameTests {
         helper.succeed();
     }
 
+    @GameTest(maxTicks = 400)
+    public void dynmapPrunesOnlyOrphanedClusterWorlds(GameTestHelper helper) {
+        MinecraftServer server = helper.getLevel().getServer();
+        var controller = MultiFabricServer.clusterController();
+
+        Path configPath = server.getWorldPath(LevelResource.ROOT).resolve("multifabricserver-cluster.json");
+        try {
+            writeConfig(configPath, new NodeSpec("testnode", true), new NodeSpec("disablednode", false));
+        } catch (IOException ioException) {
+            helper.fail("Failed to write cluster config for test: " + ioException.getMessage());
+            return;
+        }
+
+        controller.reloadFromDisk(server);
+
+        if (controller.shouldPruneDynmapSavedWorld(server, "testnode", "testnode (overworld)", false)) {
+            helper.fail("Configured enabled cluster overworld should stay in dynmap");
+            return;
+        }
+        if (controller.shouldPruneDynmapSavedWorld(server, "testnode_nether", "testnode (nether)", false)) {
+            helper.fail("Configured enabled cluster nether should stay in dynmap");
+            return;
+        }
+        if (!controller.shouldPruneDynmapSavedWorld(server, "creative", "creative (overworld)", false)) {
+            helper.fail("Orphaned cluster overworld should be pruned from dynmap");
+            return;
+        }
+        if (!controller.shouldPruneDynmapSavedWorld(server, "disablednode", "disablednode (overworld)", false)) {
+            helper.fail("Disabled cluster overworld should be pruned from dynmap");
+            return;
+        }
+        if (controller.shouldPruneDynmapSavedWorld(server, "creative", "creative (overworld)", true)) {
+            helper.fail("Loaded dynmap worlds should never be pruned as stale saved entries");
+            return;
+        }
+        if (controller.shouldPruneDynmapSavedWorld(server, "world", "overworld", false)) {
+            helper.fail("Host overworld should stay in dynmap");
+            return;
+        }
+
+        helper.succeed();
+    }
+
     @GameTest(maxTicks = 100)
     public void remoteTabDisplayNameIncludesClusterAndGrayStyle(GameTestHelper helper) {
         Component displayName = IntegratedClusterController.buildRemoteTabDisplayName("Uxzylon", "creative");
@@ -425,25 +490,16 @@ public final class ClusterRuntimeGameTests {
         helper.succeed();
     }
 
-    private static void writeConfig(Path configPath, boolean enabled, NodeSpec... nodeSpecs) throws IOException {
-        writeConfig(configPath, enabled, false, nodeSpecs);
-    }
-
-    private static void writeConfig(Path configPath,
-            boolean enabled,
-            boolean gatewayEnabled,
-            NodeSpec... nodeSpecs) throws IOException {
+    private static void writeConfig(Path configPath, NodeSpec... nodeSpecs) throws IOException {
         JsonObject root = new JsonObject();
-        root.addProperty("enabled", enabled);
-        root.addProperty("gatewayEnabled", gatewayEnabled);
+        root.addProperty("proxyHostServerName", ClusterConfig.DEFAULT_PROXY_HOST_SERVER_NAME);
+        root.addProperty("nodeIdleStopSeconds", ClusterConfig.DEFAULT_NODE_IDLE_STOP_SECONDS);
 
         JsonArray nodes = new JsonArray();
         for (NodeSpec nodeSpec : nodeSpecs) {
             JsonObject node = new JsonObject();
             node.addProperty("id", nodeSpec.id());
-            node.addProperty("worldName", nodeSpec.worldName());
             node.addProperty("enabled", nodeSpec.enabled());
-            node.addProperty("proxyServerName", nodeSpec.id());
             nodes.add(node);
         }
 
@@ -477,6 +533,6 @@ public final class ClusterRuntimeGameTests {
         }
     }
 
-    private record NodeSpec(String id, String worldName, boolean enabled) {
+    private record NodeSpec(String id, boolean enabled) {
     }
 }
