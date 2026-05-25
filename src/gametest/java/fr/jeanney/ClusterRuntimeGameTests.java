@@ -196,6 +196,150 @@ public final class ClusterRuntimeGameTests {
         helper.succeed();
     }
 
+    @GameTest(maxTicks = 4000)
+    public void disablingNodeClearsMultiplePlayerAffinities(GameTestHelper helper) {
+        MinecraftServer server = helper.getLevel().getServer();
+        var controller = MultiFabricServer.clusterController();
+
+        Path configPath = server.getWorldPath(LevelResource.ROOT).resolve("multifabricserver-cluster.json");
+        String nodeId = "testnode";
+        String firstPlayerUuid = "00000000-0000-0000-0000-000000000211";
+        String secondPlayerUuid = "00000000-0000-0000-0000-000000000212";
+
+        try {
+            writeConfig(configPath, true, true, new NodeSpec(nodeId, "testnode_world", true));
+        } catch (IOException ioException) {
+            helper.fail("Failed to write cluster config for test: " + ioException.getMessage());
+            return;
+        }
+
+        controller.reloadFromDisk(server);
+        controller.rememberPlayerCluster(server, firstPlayerUuid, nodeId);
+        controller.rememberPlayerCluster(server, secondPlayerUuid, nodeId);
+        controller.upsertSharedPlayerPresenceForTesting(firstPlayerUuid, "FirstPlayer", nodeId);
+        controller.upsertSharedPlayerPresenceForTesting(secondPlayerUuid, "SecondPlayer", nodeId);
+
+        if (!controller.setNodeEnabled(server, nodeId, false)) {
+            helper.fail("Expected node disable to succeed");
+            return;
+        }
+
+        if (!controller.isNodeStoppingForTesting(nodeId)) {
+            helper.fail("Disabled node should keep an evacuation marker during the transfer window");
+            return;
+        }
+        if (!controller.hasPendingInternalTravelForTesting(firstPlayerUuid)
+                || !controller.hasPendingInternalTravelForTesting(secondPlayerUuid)) {
+            helper.fail("Disabled node should preserve internal travel markers across config reload");
+            return;
+        }
+        assertNodeEvacuated(helper, controller, nodeId, firstPlayerUuid, secondPlayerUuid);
+        if (!controller.hasNode(nodeId)) {
+            helper.fail("Disabled node should still exist");
+            return;
+        }
+        if (controller.isNodeEnabled(nodeId)) {
+            helper.fail("Node should be disabled");
+            return;
+        }
+
+        controller.onPlayerDisconnectFromNodeForTesting(server, firstPlayerUuid, nodeId);
+        controller.onPlayerDisconnectFromNodeForTesting(server, secondPlayerUuid, nodeId);
+        assertNodeEvacuated(helper, controller, nodeId, firstPlayerUuid, secondPlayerUuid);
+
+        helper.succeed();
+    }
+
+    @GameTest(maxTicks = 4000)
+    public void removingNodeClearsMultiplePlayerAffinities(GameTestHelper helper) {
+        MinecraftServer server = helper.getLevel().getServer();
+        var controller = MultiFabricServer.clusterController();
+
+        Path configPath = server.getWorldPath(LevelResource.ROOT).resolve("multifabricserver-cluster.json");
+        String nodeId = "removenode";
+        String firstPlayerUuid = "00000000-0000-0000-0000-000000000221";
+        String secondPlayerUuid = "00000000-0000-0000-0000-000000000222";
+
+        try {
+            writeConfig(configPath, true, true, new NodeSpec(nodeId, "removenode_world", true));
+        } catch (IOException ioException) {
+            helper.fail("Failed to write cluster config for test: " + ioException.getMessage());
+            return;
+        }
+
+        controller.reloadFromDisk(server);
+        controller.rememberPlayerCluster(server, firstPlayerUuid, nodeId);
+        controller.rememberPlayerCluster(server, secondPlayerUuid, nodeId);
+        controller.upsertSharedPlayerPresenceForTesting(firstPlayerUuid, "FirstPlayer", nodeId);
+        controller.upsertSharedPlayerPresenceForTesting(secondPlayerUuid, "SecondPlayer", nodeId);
+
+        if (!controller.removeNode(server, nodeId)) {
+            helper.fail("Expected node removal to succeed");
+            return;
+        }
+
+        if (!controller.isNodeStoppingForTesting(nodeId)) {
+            helper.fail("Removed node should keep an evacuation marker during the transfer window");
+            return;
+        }
+        if (!controller.hasPendingInternalTravelForTesting(firstPlayerUuid)
+                || !controller.hasPendingInternalTravelForTesting(secondPlayerUuid)) {
+            helper.fail("Removed node should preserve internal travel markers across config reload");
+            return;
+        }
+        assertNodeEvacuated(helper, controller, nodeId, firstPlayerUuid, secondPlayerUuid);
+        if (controller.hasNode(nodeId)) {
+            helper.fail("Removed node should no longer exist");
+            return;
+        }
+
+        controller.onPlayerDisconnectFromNodeForTesting(server, firstPlayerUuid, nodeId);
+        controller.onPlayerDisconnectFromNodeForTesting(server, secondPlayerUuid, nodeId);
+        assertNodeEvacuated(helper, controller, nodeId, firstPlayerUuid, secondPlayerUuid);
+
+        helper.succeed();
+    }
+
+    @GameTest(maxTicks = 4000)
+    public void stoppingNodeClearsMultiplePlayerAffinities(GameTestHelper helper) {
+        MinecraftServer server = helper.getLevel().getServer();
+        var controller = new IntegratedClusterController();
+        String nodeId = "stopnode";
+        String firstPlayerUuid = "00000000-0000-0000-0000-000000000231";
+        String secondPlayerUuid = "00000000-0000-0000-0000-000000000232";
+
+        controller.configureSingleNodeForTesting(server, nodeId, "stopnode_world", true);
+        controller.rememberPlayerCluster(server, firstPlayerUuid, nodeId);
+        controller.rememberPlayerCluster(server, secondPlayerUuid, nodeId);
+        controller.upsertSharedPlayerPresenceForTesting(firstPlayerUuid, "FirstPlayer", nodeId);
+        controller.upsertSharedPlayerPresenceForTesting(secondPlayerUuid, "SecondPlayer", nodeId);
+
+        if (!controller.stopNode(nodeId)) {
+            helper.fail("Expected node stop to succeed");
+            return;
+        }
+
+        if (!controller.isNodeStoppingForTesting(nodeId)) {
+            helper.fail("Stopped node should keep an evacuation marker during the transfer window");
+            return;
+        }
+        assertNodeEvacuated(helper, controller, nodeId, firstPlayerUuid, secondPlayerUuid);
+        if (!controller.hasNode(nodeId)) {
+            helper.fail("Stopped node should still exist");
+            return;
+        }
+        if (!controller.isNodeEnabled(nodeId)) {
+            helper.fail("Stopped node should remain enabled");
+            return;
+        }
+
+        controller.onPlayerDisconnectFromNodeForTesting(server, firstPlayerUuid, nodeId);
+        controller.onPlayerDisconnectFromNodeForTesting(server, secondPlayerUuid, nodeId);
+        assertNodeEvacuated(helper, controller, nodeId, firstPlayerUuid, secondPlayerUuid);
+
+        helper.succeed();
+    }
+
     @GameTest(maxTicks = 200)
     public void sharedPresenceTracksAndFiltersRemotePlayers(GameTestHelper helper) {
         var controller = MultiFabricServer.clusterController();
@@ -238,6 +382,28 @@ public final class ClusterRuntimeGameTests {
         controller.removeSharedPlayerPresenceForTesting(hostViewerUuid);
         controller.removeSharedPlayerPresenceForTesting(hostPeerUuid);
         controller.removeSharedPlayerPresenceForTesting(creativePlayerUuid);
+
+        helper.succeed();
+    }
+
+    @GameTest(maxTicks = 200)
+    public void dynmapPlayerListDoesNotExposeSyntheticClusterPresences(GameTestHelper helper) {
+        MinecraftServer server = helper.getLevel().getServer();
+        var controller = MultiFabricServer.clusterController();
+
+        String hostViewerUuid = "00000000-0000-0000-0000-000000000311";
+        String clusterPlayerUuid = "00000000-0000-0000-0000-000000000312";
+
+        controller.upsertSharedPlayerPresenceForTesting(hostViewerUuid, "HostViewer", null);
+        controller.upsertSharedPlayerPresenceForTesting(clusterPlayerUuid, "ClusterUser", "testnode");
+
+        if (!controller.dynmapOnlinePlayers(server).isEmpty()) {
+            helper.fail("Dynmap should only receive live players from its own server instance");
+            return;
+        }
+
+        controller.removeSharedPlayerPresenceForTesting(hostViewerUuid);
+        controller.removeSharedPlayerPresenceForTesting(clusterPlayerUuid);
 
         helper.succeed();
     }
@@ -285,6 +451,30 @@ public final class ClusterRuntimeGameTests {
 
         Files.createDirectories(configPath.getParent());
         Files.writeString(configPath, root.toString(), StandardCharsets.UTF_8);
+    }
+
+    private static void assertNodeEvacuated(GameTestHelper helper,
+            IntegratedClusterController controller,
+            String nodeId,
+            String... playerUuids) {
+        for (String playerUuid : playerUuids) {
+            if (controller.playerClusterAffinity(playerUuid).isPresent()) {
+                helper.fail("Player should not retain affinity for node " + nodeId + ": " + playerUuid);
+                return;
+            }
+
+            var route = controller.resolveGatewayRoute("gateway.test", playerUuid);
+            if (route.isEmpty() || route.get().nodeId() != null) {
+                helper.fail("Player should route to host after node evacuation: " + playerUuid);
+                return;
+            }
+        }
+
+        boolean hasNodePresence = controller.sharedOnlinePlayers().stream()
+                .anyMatch(player -> nodeId.equals(player.nodeId()));
+        if (hasNodePresence) {
+            helper.fail("Node presence should be cleared for " + nodeId);
+        }
     }
 
     private record NodeSpec(String id, String worldName, boolean enabled) {

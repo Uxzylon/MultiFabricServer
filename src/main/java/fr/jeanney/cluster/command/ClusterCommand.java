@@ -17,6 +17,7 @@ import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.permissions.Permission;
 import net.minecraft.server.permissions.PermissionLevel;
 
@@ -353,6 +354,8 @@ public final class ClusterCommand {
         }
         String playerName = player.getScoreboardName();
 
+        boolean useSeamlessProxySwitch = controller.isSeamlessProxySwitchEnabled()
+                || ProxyForwardingConfig.isFabricProxyLiteConfigured(source.getServer());
         int port;
         String host;
         String targetNodeId;
@@ -372,6 +375,9 @@ public final class ClusterCommand {
             if (!runtime.definition().enabled()) {
                 return failTravel(source, playerName, target, "Target node is disabled: " + target);
             }
+            if (useSeamlessProxySwitch) {
+                return requestSeamlessSwitch(source, controller, player, playerName, target, target);
+            }
             if (runtime.state() != ClusterNodeState.RUNNING) {
                 if (!controller.isConfigEnabled()) {
                     return failTravel(
@@ -383,6 +389,12 @@ public final class ClusterCommand {
 
                 boolean started = controller.startNode(source.getServer(), target);
                 ClusterNodeRuntime refreshedRuntime = controller.node(target).orElse(runtime);
+                if (started && refreshedRuntime.state() == ClusterNodeState.STARTING
+                        && controller.requestDirectClusterTravelWhenReady(source.getServer(), player, target)) {
+                    source.sendSuccess(() -> Component.literal("Cluster is starting; transfer requested: " + target),
+                            false);
+                    return 1;
+                }
                 if (!started || refreshedRuntime.state() != ClusterNodeState.RUNNING) {
                     String reason = refreshedRuntime.failureReason().isBlank()
                             ? "check server logs"
@@ -413,21 +425,8 @@ public final class ClusterCommand {
             targetNodeId = target;
         }
 
-        boolean useSeamlessProxySwitch = controller.isSeamlessProxySwitchEnabled()
-                || ProxyForwardingConfig.isFabricProxyLiteConfigured(source.getServer());
         if (useSeamlessProxySwitch) {
-            if (!controller.isSeamlessProxySwitchEnabled()) {
-                MultiFabricServer.LOGGER.info(
-                        "Using seamless proxy switch for player '{}' to target '{}' because FabricProxy-Lite is configured",
-                        playerName,
-                        target);
-            }
-            boolean switched = controller.requestSeamlessProxyTravel(source.getServer(), player, targetNodeId);
-            if (!switched) {
-                return failTravel(source, playerName, target, "Seamless proxy switch failed for target: " + target);
-            }
-            source.sendSuccess(() -> Component.literal("Seamless switch requested: " + target), false);
-            return 1;
+            return requestSeamlessSwitch(source, controller, player, playerName, target, targetNodeId);
         }
 
         String transferCommand = "transfer " + host + " " + port;
@@ -447,6 +446,26 @@ public final class ClusterCommand {
         } catch (Exception exception) {
             return failTravel(source, playerName, target, "Transfer failed: " + exception.getMessage());
         }
+    }
+
+    private static int requestSeamlessSwitch(CommandSourceStack source,
+            IntegratedClusterController controller,
+            ServerPlayer player,
+            String playerName,
+            String target,
+            String targetNodeId) {
+        if (!controller.isSeamlessProxySwitchEnabled()) {
+            MultiFabricServer.LOGGER.info(
+                    "Using seamless proxy switch for player '{}' to target '{}' because FabricProxy-Lite is configured",
+                    playerName,
+                    target);
+        }
+        boolean switched = controller.requestSeamlessProxyTravel(source.getServer(), player, targetNodeId);
+        if (!switched) {
+            return failTravel(source, playerName, target, "Seamless proxy switch failed for target: " + target);
+        }
+        source.sendSuccess(() -> Component.literal("Seamless switch requested: " + target), false);
+        return 1;
     }
 
     private static int failTravel(CommandSourceStack source, String playerName, String target, String message) {
