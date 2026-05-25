@@ -40,7 +40,9 @@ public final class ClusterConfigLoader {
             if (!element.isJsonObject()) {
                 throw new IllegalStateException("Root must be a JSON object");
             }
-            return parseConfig(element.getAsJsonObject());
+            ClusterConfig config = parseConfig(element.getAsJsonObject());
+            writeConfig(path, config);
+            return config;
         } catch (Exception exception) {
             MultiFabricServer.LOGGER.error("Failed to parse cluster config at {}. Using default disabled config.", path,
                     exception);
@@ -53,15 +55,10 @@ public final class ClusterConfigLoader {
     }
 
     private static ClusterConfig parseConfig(JsonObject root) {
-        boolean enabled = readBoolean(root, "enabled", ClusterConfig.DEFAULT_ENABLED);
-        boolean gatewayEnabled = readBoolean(root, "gatewayEnabled", false);
-        boolean seamlessProxySwitchEnabled = readBoolean(root, "seamlessProxySwitchEnabled", false);
         String proxyHostServerName = readString(root, "proxyHostServerName",
                 ClusterConfig.DEFAULT_PROXY_HOST_SERVER_NAME);
-        String transferHost = readString(root, "transferHost", ClusterConfig.DEFAULT_TRANSFER_HOST);
-        String gatewayBindHost = readString(root, "gatewayBindHost", ClusterConfig.DEFAULT_GATEWAY_BIND_HOST);
-        int gatewayBindPort = readInt(root, "gatewayBindPort", ClusterConfig.DEFAULT_GATEWAY_BIND_PORT);
-        int nodeIdleStopSeconds = readInt(root, "nodeIdleStopSeconds", 300);
+        int nodeIdleStopSeconds = readInt(root, "nodeIdleStopSeconds",
+                ClusterConfig.DEFAULT_NODE_IDLE_STOP_SECONDS);
         List<ClusterNodeDefinition> nodes = new ArrayList<>();
 
         JsonArray nodeArray = root.has("nodes") && root.get("nodes").isJsonArray()
@@ -74,25 +71,17 @@ public final class ClusterConfigLoader {
             }
             JsonObject nodeObject = nodeElement.getAsJsonObject();
             String id = readString(nodeObject, "id", "");
-            String worldName = readString(nodeObject, "worldName", "");
             boolean nodeEnabled = readBoolean(nodeObject, "enabled", true);
-            String proxyServerName = readString(nodeObject, "proxyServerName", "");
 
-            if (id.isBlank() || worldName.isBlank()) {
-                MultiFabricServer.LOGGER.warn("Skipping invalid cluster node with blank id/worldName: {}", nodeObject);
+            if (id.isBlank()) {
+                MultiFabricServer.LOGGER.warn("Skipping invalid cluster node with blank id: {}", nodeObject);
                 continue;
             }
-            nodes.add(new ClusterNodeDefinition(id, worldName, nodeEnabled, proxyServerName));
+            nodes.add(new ClusterNodeDefinition(id, nodeEnabled));
         }
 
         return new ClusterConfig(
-                enabled,
-                gatewayEnabled,
-                seamlessProxySwitchEnabled,
                 proxyHostServerName,
-                transferHost,
-                gatewayBindHost,
-                gatewayBindPort,
                 nodeIdleStopSeconds,
                 List.copyOf(nodes));
     }
@@ -129,29 +118,7 @@ public final class ClusterConfigLoader {
 
     private static void writeDefault(Path path, ClusterConfig defaultConfig) {
         try {
-            Files.createDirectories(path.getParent());
-            JsonObject root = new JsonObject();
-            root.addProperty("enabled", defaultConfig.enabled());
-            root.addProperty("gatewayEnabled", defaultConfig.gatewayEnabled());
-            root.addProperty("seamlessProxySwitchEnabled", defaultConfig.seamlessProxySwitchEnabled());
-            root.addProperty("proxyHostServerName", defaultConfig.proxyHostServerName());
-            root.addProperty("transferHost", defaultConfig.transferHost());
-            root.addProperty("gatewayBindHost", defaultConfig.gatewayBindHost());
-            root.addProperty("gatewayBindPort", defaultConfig.gatewayBindPort());
-            root.addProperty("nodeIdleStopSeconds", defaultConfig.nodeIdleStopSeconds());
-
-            JsonArray nodes = new JsonArray();
-            for (ClusterNodeDefinition node : defaultConfig.nodes()) {
-                JsonObject nodeJson = new JsonObject();
-                writeNodeJson(nodeJson, node);
-                nodes.add(nodeJson);
-            }
-            root.add("nodes", nodes);
-
-            try (Writer writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
-                GSON.toJson(root, writer);
-            }
-
+            writeConfig(path, defaultConfig);
             MultiFabricServer.LOGGER.info("Created default integrated cluster config at {}", path);
         } catch (IOException ioException) {
             MultiFabricServer.LOGGER.error("Failed to write default cluster config at {}", path, ioException);
@@ -161,40 +128,34 @@ public final class ClusterConfigLoader {
     public static void save(MinecraftServer server, ClusterConfig config) {
         Path path = resolveConfigPath(server);
         try {
-            Files.createDirectories(path.getParent());
-
-            JsonObject root = new JsonObject();
-            root.addProperty("enabled", config.enabled());
-            root.addProperty("gatewayEnabled", config.gatewayEnabled());
-            root.addProperty("seamlessProxySwitchEnabled", config.seamlessProxySwitchEnabled());
-            root.addProperty("proxyHostServerName", config.proxyHostServerName());
-            root.addProperty("transferHost", config.transferHost());
-            root.addProperty("gatewayBindHost", config.gatewayBindHost());
-            root.addProperty("gatewayBindPort", config.gatewayBindPort());
-            root.addProperty("nodeIdleStopSeconds", config.nodeIdleStopSeconds());
-
-            JsonArray nodes = new JsonArray();
-            for (ClusterNodeDefinition node : config.nodes()) {
-                JsonObject nodeJson = new JsonObject();
-                writeNodeJson(nodeJson, node);
-                nodes.add(nodeJson);
-            }
-            root.add("nodes", nodes);
-
-            try (Writer writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
-                GSON.toJson(root, writer);
-            }
+            writeConfig(path, config);
         } catch (IOException ioException) {
             MultiFabricServer.LOGGER.error("Failed to save cluster config at {}", path, ioException);
         }
     }
 
+    private static void writeConfig(Path path, ClusterConfig config) throws IOException {
+        Files.createDirectories(path.getParent());
+
+        JsonObject root = new JsonObject();
+        root.addProperty("proxyHostServerName", config.proxyHostServerName());
+        root.addProperty("nodeIdleStopSeconds", config.nodeIdleStopSeconds());
+
+        JsonArray nodes = new JsonArray();
+        for (ClusterNodeDefinition node : config.nodes()) {
+            JsonObject nodeJson = new JsonObject();
+            writeNodeJson(nodeJson, node);
+            nodes.add(nodeJson);
+        }
+        root.add("nodes", nodes);
+
+        try (Writer writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
+            GSON.toJson(root, writer);
+        }
+    }
+
     private static void writeNodeJson(JsonObject nodeJson, ClusterNodeDefinition node) {
         nodeJson.addProperty("id", node.id());
-        nodeJson.addProperty("worldName", node.worldName());
         nodeJson.addProperty("enabled", node.enabled());
-        if (node.proxyServerName() != null && !node.proxyServerName().isBlank()) {
-            nodeJson.addProperty("proxyServerName", node.proxyServerName());
-        }
     }
 }
