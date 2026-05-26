@@ -52,6 +52,7 @@ abstract class ClusterControllerBase {
     protected final Map<String, InternalTravelMarker> pendingInternalTravelMarkersByPlayer = new LinkedHashMap<>();
     protected final Map<String, ExternalLifecycleSuppressionMarker> pendingExternalLifecycleSuppressionsByPlayer = new LinkedHashMap<>();
     protected final Map<String, DynmapLogoutSuppressionMarker> pendingDynmapLogoutSuppressionsByPlayer = new LinkedHashMap<>();
+    protected final Map<String, String> pendingHostRouteMessagesByPlayer = new LinkedHashMap<>();
     protected final Set<String> pendingRuntimeDirectoryDeletes = new LinkedHashSet<>();
 
     protected boolean initialized;

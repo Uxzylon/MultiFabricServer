@@ -13,11 +13,17 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+
+import org.jspecify.annotations.NonNull;
+
 import net.minecraft.ChatFormatting;
 import net.minecraft.gametest.framework.GameTestServer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.storage.LevelResource;
 
 abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
@@ -200,6 +206,7 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
             pendingInternalTravelMarkersByPlayer.clear();
             pendingExternalLifecycleSuppressionsByPlayer.clear();
             pendingDynmapLogoutSuppressionsByPlayer.clear();
+            pendingHostRouteMessagesByPlayer.clear();
             ownerServer = null;
             MultiFabricServer.LOGGER.debug("Owner cleared after host fully stopped");
         }
@@ -270,6 +277,7 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
 
         persistRuntimeState(server);
         refreshSharedTabLists();
+        ClusterDynmapSyncListeners.notifySynced(server);
 
         return runtimes.size();
     }
@@ -431,6 +439,9 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
         }
 
         boolean suppressJoinMessage = consumePendingInternalTravelMarker(playerUuid, nodeIdForServer);
+        String hostRouteMessageNodeId = nodeIdForServer == null
+                ? pendingHostRouteMessagesByPlayer.remove(playerUuid)
+                : null;
         forceHostRoutePlayerUuids.remove(playerUuid);
 
         if (nodeIdForServer != null) {
@@ -444,6 +455,11 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
         if (!suppressJoinMessage) {
             broadcastSharedLifecycleMessage(
                     Component.literal(playerName + " joined the game").withStyle(ChatFormatting.YELLOW));
+        }
+
+        if (hostRouteMessageNodeId != null && !hostRouteMessageNodeId.isBlank()) {
+            player.sendSystemMessage(Component.literal("Cluster '" + hostRouteMessageNodeId
+                    + "' is unavailable. You were sent back to host.").withStyle(ChatFormatting.YELLOW));
         }
 
         if (nodeIdForServer != null) {
@@ -551,6 +567,7 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
         pendingInternalTravelMarkersByPlayer.clear();
         pendingExternalLifecycleSuppressionsByPlayer.clear();
         pendingDynmapLogoutSuppressionsByPlayer.clear();
+        pendingHostRouteMessagesByPlayer.clear();
     }
 
     public synchronized Optional<String> playerClusterAffinity(String playerUuid) {
@@ -558,6 +575,13 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
             return Optional.empty();
         }
         return Optional.ofNullable(playerClusterAffinities.get(playerUuid));
+    }
+
+    public synchronized Optional<String> pendingHostRouteMessageForTesting(String playerUuid) {
+        if (playerUuid == null || playerUuid.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(pendingHostRouteMessagesByPlayer.get(playerUuid));
     }
 
     public synchronized boolean hasNode(String nodeId) {
@@ -609,6 +633,40 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
         return List.copyOf(playersByUuid.values());
     }
 
+    public synchronized List<ClusterDynmapWorld> enabledDynmapClusterWorlds(MinecraftServer hostServer) {
+        MinecraftServer effectiveHostServer = resolveControlServer(hostServer);
+        if (effectiveHostServer == null) {
+            return List.of();
+        }
+
+        DimensionTemplate overworld = dimensionTemplate(effectiveHostServer, Level.OVERWORLD);
+        DimensionTemplate nether = dimensionTemplate(effectiveHostServer, Level.NETHER);
+        DimensionTemplate end = dimensionTemplate(effectiveHostServer, Level.END);
+
+        return buildEnabledDynmapClusterWorlds(overworld, nether, end);
+    }
+
+    private List<ClusterDynmapWorld> buildEnabledDynmapClusterWorlds(
+            DimensionTemplate overworld,
+            DimensionTemplate nether,
+            DimensionTemplate end) {
+        List<ClusterDynmapWorld> worlds = new ArrayList<>();
+
+        for (ClusterNodeRuntime runtime : runtimes.values()) {
+            ClusterNodeDefinition definition = runtime.definition();
+            if (!definition.enabled()) {
+                continue;
+            }
+
+            String nodeId = definition.id();
+            worlds.add(overworld.toDynmapWorld(nodeId, nodeId + " (overworld)", false, false));
+            worlds.add(nether.toDynmapWorld(nodeId + "_nether", nodeId + " (nether)", true, false));
+            worlds.add(end.toDynmapWorld(nodeId + "_the_end", nodeId + " (end)", false, true));
+        }
+
+        return List.copyOf(worlds);
+    }
+
     public synchronized boolean shouldPruneDynmapSavedWorld(
             MinecraftServer hostServer, String worldName, String worldTitle, boolean loaded) {
         if (loaded || worldName == null || worldName.isBlank()) {
@@ -627,5 +685,23 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
         }
 
         return looksLikeClusterDynmapWorld(normalizedWorldName, worldTitle);
+    }
+
+    private static DimensionTemplate dimensionTemplate(
+            MinecraftServer server,
+            @NonNull ResourceKey<Level> dimension) {
+        ServerLevel level = server.getLevel(dimension);
+        if (level == null) {
+            return DimensionTemplate.DEFAULT;
+        }
+        return new DimensionTemplate(level.getHeight(), level.getMinY(), level.getSeaLevel());
+    }
+
+    private record DimensionTemplate(int height, int minY, int seaLevel) {
+        private static final DimensionTemplate DEFAULT = new DimensionTemplate(384, -64, 63);
+
+        private ClusterDynmapWorld toDynmapWorld(String name, String title, boolean nether, boolean theEnd) {
+            return new ClusterDynmapWorld(name, title, height, minY, seaLevel, nether, theEnd);
+        }
     }
 }
