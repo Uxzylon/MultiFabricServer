@@ -2,10 +2,10 @@ package fr.jeanney.cluster;
 
 import java.util.OptionalInt;
 
-public interface EmbeddedServerHandle extends AutoCloseable {
+interface EmbeddedServerHandle extends AutoCloseable {
     String nodeId();
 
-    boolean isAlive();
+    boolean isStopped();
 
     default OptionalInt listenPort() {
         return OptionalInt.empty();

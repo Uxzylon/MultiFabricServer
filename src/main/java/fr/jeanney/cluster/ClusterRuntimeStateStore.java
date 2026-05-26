@@ -21,14 +21,14 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
-public final class ClusterRuntimeStateStore {
+final class ClusterRuntimeStateStore {
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     private ClusterRuntimeStateStore() {
     }
 
-    public static RuntimeState load(MinecraftServer server) {
+    static RuntimeState load(MinecraftServer server) {
         Path path = resolvePath(server);
         if (!Files.exists(path)) {
             return RuntimeState.empty();
@@ -79,44 +79,48 @@ public final class ClusterRuntimeStateStore {
         }
     }
 
-    public static void save(MinecraftServer server, Set<String> activeNodes, Map<String, String> playerClusters) {
+    static void save(MinecraftServer server, Set<String> activeNodes, Map<String, String> playerClusters) {
         Path path = resolvePath(server);
         try {
             Files.createDirectories(path.getParent());
 
-            JsonObject root = new JsonObject();
-
-            JsonArray activeArray = new JsonArray();
-            for (String nodeId : activeNodes) {
-                activeArray.add(nodeId);
-            }
-            root.add("activeNodes", activeArray);
-
-            JsonObject players = new JsonObject();
-            for (Map.Entry<String, String> entry : playerClusters.entrySet()) {
-                players.addProperty(entry.getKey(), entry.getValue());
-            }
-            root.add("playerClusters", players);
-
             try (Writer writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
-                GSON.toJson(root, writer);
+                GSON.toJson(runtimeStateJson(activeNodes, playerClusters), writer);
             }
         } catch (IOException ioException) {
             MultiFabricServer.LOGGER.error("Failed to persist cluster runtime state at {}", path, ioException);
         }
     }
 
+    private static JsonObject runtimeStateJson(Set<String> activeNodes, Map<String, String> playerClusters) {
+        JsonObject root = new JsonObject();
+
+        JsonArray activeArray = new JsonArray();
+        for (String nodeId : activeNodes) {
+            activeArray.add(nodeId);
+        }
+        root.add("activeNodes", activeArray);
+
+        JsonObject players = new JsonObject();
+        for (Map.Entry<String, String> entry : playerClusters.entrySet()) {
+            players.addProperty(entry.getKey(), entry.getValue());
+        }
+        root.add("playerClusters", players);
+
+        return root;
+    }
+
     private static Path resolvePath(MinecraftServer server) {
         return server.getWorldPath(LevelResource.ROOT).resolve("multifabricserver-cluster-state.json");
     }
 
-    public record RuntimeState(Set<String> activeNodes, Map<String, String> playerClusters) {
-        public RuntimeState {
+    record RuntimeState(Set<String> activeNodes, Map<String, String> playerClusters) {
+        RuntimeState {
             activeNodes = Set.copyOf(activeNodes);
             playerClusters = Map.copyOf(playerClusters);
         }
 
-        public static RuntimeState empty() {
+        static RuntimeState empty() {
             return new RuntimeState(Set.of(), Map.of());
         }
     }

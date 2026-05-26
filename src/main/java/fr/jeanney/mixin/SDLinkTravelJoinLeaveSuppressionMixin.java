@@ -1,14 +1,14 @@
 package fr.jeanney.mixin;
 
 import fr.jeanney.MultiFabricServer;
+import java.lang.reflect.Method;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Coerce;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-
-import java.lang.reflect.Method;
 
 @Pseudo
 @Mixin(targets = "com.hypherionmc.sdlink.server.ServerEvents", remap = false)
@@ -26,6 +26,7 @@ public abstract class SDLinkTravelJoinLeaveSuppressionMixin {
         suppressWhenInternalTravel(event, callbackInfo);
     }
 
+    @Unique
     private static void suppressWhenInternalTravel(Object event, CallbackInfo callbackInfo) {
         String playerUuid = resolvePlayerUuid(event);
         if (playerUuid == null || playerUuid.isBlank()) {
@@ -37,6 +38,7 @@ public abstract class SDLinkTravelJoinLeaveSuppressionMixin {
         }
     }
 
+    @Unique
     private static String resolvePlayerUuid(Object craterEvent) {
         if (craterEvent == null) {
             return null;
@@ -58,14 +60,15 @@ public abstract class SDLinkTravelJoinLeaveSuppressionMixin {
         }
 
         String uuid = uuidObject.toString();
-        return uuid == null || uuid.isBlank() ? null : uuid;
+        return uuid.isBlank() ? null : uuid;
     }
 
+    @Unique
     private static Object invokeNoArg(Object instance, String methodName) {
         try {
             Method method = instance.getClass().getMethod(methodName);
             return method.invoke(instance);
-        } catch (Exception ignored) {
+        } catch (ReflectiveOperationException ignored) {
             return null;
         }
     }

@@ -6,11 +6,15 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import fr.jeanney.MultiFabricServer;
-import fr.jeanney.cluster.ClusterPlayerPresence;
 import fr.jeanney.cluster.ClusterNodeRuntime;
 import fr.jeanney.cluster.ClusterNodeState;
+import fr.jeanney.cluster.ClusterPlayerPresence;
 import fr.jeanney.cluster.IntegratedClusterController;
 import fr.jeanney.cluster.ProxyForwardingConfig;
+import java.util.Comparator;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.stream.Stream;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -20,11 +24,6 @@ import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.permissions.Permission;
 import net.minecraft.server.permissions.PermissionLevel;
-
-import java.util.Comparator;
-import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
-import java.util.stream.Stream;
 
 public final class ClusterCommand {
 
@@ -41,7 +40,8 @@ public final class ClusterCommand {
                         .requires(ClusterCommand::hasNodeAdminPermission)
                         .executes(context -> {
                             CommandSourceStack source = context.getSource();
-                            return showStatus(source, controller);
+                            showStatus(source, controller);
+                            return 1;
                         }))
                 .then(Commands.literal("players")
                         .requires(ClusterCommand::hasNodeAdminPermission)
@@ -89,7 +89,7 @@ public final class ClusterCommand {
                 .then(Commands.literal("start")
                         .requires(ClusterCommand::hasNodeAdminPermission)
                         .then(Commands.argument("node", wordArgumentType())
-                                .suggests((context, builder) -> suggestNodes(controller, builder))
+                                .suggests((_, builder) -> suggestNodes(controller, builder))
                                 .executes(context -> {
                                     String node = StringArgumentType.getString(context, "node");
                                     boolean started = controller.startNode(context.getSource().getServer(), node);
@@ -112,7 +112,7 @@ public final class ClusterCommand {
                 .then(Commands.literal("enable")
                         .requires(ClusterCommand::hasNodeAdminPermission)
                         .then(Commands.argument("node", wordArgumentType())
-                                .suggests((context, builder) -> suggestNodes(controller, builder))
+                                .suggests((_, builder) -> suggestNodes(controller, builder))
                                 .executes(context -> {
                                     String node = StringArgumentType.getString(context, "node");
                                     boolean changed = controller.setNodeEnabled(context.getSource().getServer(), node,
@@ -130,7 +130,7 @@ public final class ClusterCommand {
                 .then(Commands.literal("disable")
                         .requires(ClusterCommand::hasNodeAdminPermission)
                         .then(Commands.argument("node", wordArgumentType())
-                                .suggests((context, builder) -> suggestNodes(controller, builder))
+                                .suggests((_, builder) -> suggestNodes(controller, builder))
                                 .executes(context -> {
                                     String node = StringArgumentType.getString(context, "node");
                                     boolean changed = controller.setNodeEnabled(context.getSource().getServer(), node,
@@ -146,7 +146,7 @@ public final class ClusterCommand {
                 .then(Commands.literal("remove")
                         .requires(ClusterCommand::hasNodeAdminPermission)
                         .then(Commands.argument("node", wordArgumentType())
-                                .suggests((context, builder) -> suggestNodes(controller, builder))
+                                .suggests((_, builder) -> suggestNodes(controller, builder))
                                 .executes(context -> {
                                     String node = StringArgumentType.getString(context, "node");
                                     boolean removed = controller.removeNode(context.getSource().getServer(), node);
@@ -160,7 +160,7 @@ public final class ClusterCommand {
                                 })))
                 .then(Commands.literal("tp")
                         .then(Commands.argument("target", wordArgumentType())
-                                .suggests((context, builder) -> suggestTravelTargets(controller, builder))
+                                .suggests((_, builder) -> suggestTravelTargets(controller, builder))
                                 .executes(context -> {
                                     String target = StringArgumentType.getString(context, "target");
                                     return transferToTarget(context.getSource(), controller, target);
@@ -168,7 +168,7 @@ public final class ClusterCommand {
                 .then(Commands.literal("stop")
                         .requires(ClusterCommand::hasNodeAdminPermission)
                         .then(Commands.argument("node", wordArgumentType())
-                                .suggests((context, builder) -> suggestNodes(controller, builder))
+                                .suggests((_, builder) -> suggestNodes(controller, builder))
                                 .executes(context -> {
                                     String node = StringArgumentType.getString(context, "node");
                                     boolean stopped = controller.stopNode(node);
@@ -182,19 +182,20 @@ public final class ClusterCommand {
                                 }))));
     }
 
-    private static Permission nodeAdminPermission() {
-        return Objects.requireNonNull(NODE_ADMIN_PERMISSION);
+    private static boolean hasNodeAdminPermission(CommandSourceStack source) {
+        return hasPermission(source, NODE_ADMIN_PERMISSION);
     }
 
     @SuppressWarnings("null")
-    private static boolean hasNodeAdminPermission(CommandSourceStack source) {
-        return source.permissions().hasPermission(nodeAdminPermission());
+    private static boolean hasPermission(CommandSourceStack source, Permission permission) {
+        return source.permissions().hasPermission(permission);
     }
 
     private static ArgumentType<String> wordArgumentType() {
-        return Objects.requireNonNull(StringArgumentType.word());
+        return StringArgumentType.word();
     }
 
+    @SuppressWarnings("null")
     private static int addNode(CommandSourceStack source, IntegratedClusterController controller, String node) {
         if (!IntegratedClusterController.isValidNodeName(node)) {
             source.sendFailure(Component.literal(
@@ -217,11 +218,13 @@ public final class ClusterCommand {
         return 1;
     }
 
+    @SuppressWarnings("null")
     private static CompletableFuture<Suggestions> suggestNodes(IntegratedClusterController controller,
             SuggestionsBuilder builder) {
         return SharedSuggestionProvider.suggest(nodeIds(controller), builder);
     }
 
+    @SuppressWarnings("null")
     private static CompletableFuture<Suggestions> suggestTravelTargets(IntegratedClusterController controller,
             SuggestionsBuilder builder) {
         return SharedSuggestionProvider.suggest(
@@ -235,7 +238,7 @@ public final class ClusterCommand {
                 .sorted(String.CASE_INSENSITIVE_ORDER);
     }
 
-    private static int showStatus(CommandSourceStack source, IntegratedClusterController controller) {
+    private static void showStatus(CommandSourceStack source, IntegratedClusterController controller) {
         int totalPlayers = controller.sharedOnlinePlayersCount();
         source.sendSuccess(() -> Component.literal("Cluster status")
                 .withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD)
@@ -251,7 +254,7 @@ public final class ClusterCommand {
         if (nodes.isEmpty()) {
             source.sendSuccess(() -> Component.literal("No clusters configured")
                     .withStyle(ChatFormatting.GRAY), false);
-            return 1;
+            return;
         }
 
         for (ClusterNodeRuntime runtime : nodes) {
@@ -264,7 +267,6 @@ public final class ClusterCommand {
                             countPlayers(controller, nodeId)),
                     false);
         }
-        return 1;
     }
 
     private static int countPlayers(IntegratedClusterController controller, String nodeId) {
@@ -273,6 +275,7 @@ public final class ClusterCommand {
                 .count();
     }
 
+    @SuppressWarnings("null")
     private static Component statusLine(String name, boolean enabled, boolean running, int players) {
         return Component.literal(" - ").withStyle(ChatFormatting.DARK_GRAY)
                 .append(Component.literal(name).withStyle("host".equals(name)
@@ -287,6 +290,7 @@ public final class ClusterCommand {
                         .withStyle(ChatFormatting.GRAY));
     }
 
+    @SuppressWarnings("null")
     private static MutableComponent flag(boolean value, String trueText, String falseText) {
         return Component.literal(value ? trueText : falseText)
                 .withStyle(value ? ChatFormatting.GREEN : ChatFormatting.RED);
@@ -294,8 +298,7 @@ public final class ClusterCommand {
 
     private static int transferToTarget(CommandSourceStack source, IntegratedClusterController controller,
             String target) {
-        var player = source.getPlayer();
-        if (player == null) {
+        if (!(source.getEntity() instanceof ServerPlayer player)) {
             source.sendFailure(Component.literal("This command must be run by a player"));
             return 0;
         }
@@ -395,6 +398,7 @@ public final class ClusterCommand {
         return 1;
     }
 
+    @SuppressWarnings("null")
     private static int failTravel(CommandSourceStack source, String playerName, String target, String message) {
         source.sendFailure(Component.literal(message));
         MultiFabricServer.LOGGER.warn(

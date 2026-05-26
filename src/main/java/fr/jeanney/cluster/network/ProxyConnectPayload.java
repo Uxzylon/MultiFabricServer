@@ -1,30 +1,28 @@
 package fr.jeanney.cluster.network;
 
-import net.minecraft.network.FriendlyByteBuf;
-import net.minecraft.network.codec.StreamCodec;
-import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
-import net.minecraft.resources.Identifier;
-
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.Objects;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.codec.StreamCodec;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.resources.Identifier;
+import org.jspecify.annotations.NonNull;
 
-@SuppressWarnings("null")
 public record ProxyConnectPayload(String targetServerName) implements CustomPacketPayload {
 
     private static final String SUBCHANNEL_CONNECT = "Connect";
 
-    public static final CustomPacketPayload.Type<ProxyConnectPayload> TYPE = new CustomPacketPayload.Type<>(
-            Identifier.parse("bungeecord:main"));
+    public static final CustomPacketPayload.@NonNull Type<ProxyConnectPayload> TYPE = createType();
 
-    public static final StreamCodec<FriendlyByteBuf, ProxyConnectPayload> STREAM_CODEC = CustomPacketPayload
-            .codec(ProxyConnectPayload::write, ProxyConnectPayload::new);
+    public static final @NonNull StreamCodec<FriendlyByteBuf, ProxyConnectPayload> STREAM_CODEC = createCodec();
 
     public ProxyConnectPayload {
-        if (targetServerName == null || targetServerName.isBlank()) {
+        targetServerName = Objects.requireNonNull(targetServerName, "targetServerName");
+        if (targetServerName.isBlank()) {
             throw new IllegalArgumentException("Target proxy server name cannot be blank");
         }
     }
@@ -33,13 +31,14 @@ public record ProxyConnectPayload(String targetServerName) implements CustomPack
         this(readTargetServerName(buffer));
     }
 
+    @SuppressWarnings("null")
     private void write(FriendlyByteBuf buffer) {
         byte[] payloadBytes = encodeConnectPayload(targetServerName);
-        buffer.writeBytes(Objects.requireNonNull(payloadBytes));
+        buffer.writeBytes(payloadBytes);
     }
 
     @Override
-    public Type<ProxyConnectPayload> type() {
+    public CustomPacketPayload.@NonNull Type<ProxyConnectPayload> type() {
         return TYPE;
     }
 
@@ -59,7 +58,7 @@ public record ProxyConnectPayload(String targetServerName) implements CustomPack
             }
 
             String target = input.readUTF();
-            if (target == null || target.isBlank()) {
+            if (target.isBlank()) {
                 throw new IllegalArgumentException("Proxy target server cannot be blank");
             }
             return target;
@@ -69,6 +68,7 @@ public record ProxyConnectPayload(String targetServerName) implements CustomPack
     }
 
     private static byte[] encodeConnectPayload(String targetServerName) {
+        Objects.requireNonNull(targetServerName, "targetServerName");
         ByteArrayOutputStream byteOutput = new ByteArrayOutputStream();
         try (DataOutputStream dataOutput = new DataOutputStream(byteOutput)) {
             dataOutput.writeUTF(SUBCHANNEL_CONNECT);
@@ -78,5 +78,13 @@ public record ProxyConnectPayload(String targetServerName) implements CustomPack
         } catch (IOException ioException) {
             throw new IllegalStateException("Failed to encode proxy connect payload", ioException);
         }
+    }
+
+    private static CustomPacketPayload.@NonNull Type<ProxyConnectPayload> createType() {
+        return new CustomPacketPayload.Type<>(Identifier.parse("bungeecord:main"));
+    }
+
+    private static @NonNull StreamCodec<FriendlyByteBuf, ProxyConnectPayload> createCodec() {
+        return CustomPacketPayload.codec(ProxyConnectPayload::write, ProxyConnectPayload::new);
     }
 }

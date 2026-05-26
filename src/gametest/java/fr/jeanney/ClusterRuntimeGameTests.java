@@ -3,15 +3,12 @@ package fr.jeanney;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import fr.jeanney.cluster.ClusterConfig;
-import fr.jeanney.cluster.ClusterPlayerPresence;
-import fr.jeanney.cluster.IntegratedClusterController;
+import fr.jeanney.cluster.*;
 import net.fabricmc.fabric.api.gametest.v1.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.storage.LevelResource;
-import fr.jeanney.cluster.ClusterNodeState;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -202,9 +199,10 @@ public final class ClusterRuntimeGameTests {
             helper.fail("Expected gateway host route after explicit host travel");
             return;
         }
-        if (forcedHostRoute.get().nodeId() != null) {
+        var routedNodeId = forcedHostRoute.map(GatewayRoute::nodeId).orElse(null);
+        if (routedNodeId != null) {
             helper.fail("Expected explicit host travel to bypass affinity and route to host, got node "
-                    + forcedHostRoute.get().nodeId());
+                    + routedNodeId);
             return;
         }
 
@@ -239,12 +237,12 @@ public final class ClusterRuntimeGameTests {
             return;
         }
 
-        if (!controller.isNodeStoppingForTesting(nodeId)) {
+        if (controller.isNodeStopMarkerAbsentForTesting(nodeId)) {
             helper.fail("Disabled node should keep an evacuation marker during the transfer window");
             return;
         }
-        if (!controller.hasPendingInternalTravelForTesting(firstPlayerUuid)
-                || !controller.hasPendingInternalTravelForTesting(secondPlayerUuid)) {
+        if (controller.isInternalTravelMarkerAbsentForTesting(firstPlayerUuid)
+                || controller.isInternalTravelMarkerAbsentForTesting(secondPlayerUuid)) {
             helper.fail("Disabled node should preserve internal travel markers across config reload");
             return;
         }
@@ -296,12 +294,12 @@ public final class ClusterRuntimeGameTests {
             return;
         }
 
-        if (!controller.isNodeStoppingForTesting(nodeId)) {
+        if (controller.isNodeStopMarkerAbsentForTesting(nodeId)) {
             helper.fail("Removed node should keep an evacuation marker during the transfer window");
             return;
         }
-        if (!controller.hasPendingInternalTravelForTesting(firstPlayerUuid)
-                || !controller.hasPendingInternalTravelForTesting(secondPlayerUuid)) {
+        if (controller.isInternalTravelMarkerAbsentForTesting(firstPlayerUuid)
+                || controller.isInternalTravelMarkerAbsentForTesting(secondPlayerUuid)) {
             helper.fail("Removed node should preserve internal travel markers across config reload");
             return;
         }
@@ -341,7 +339,7 @@ public final class ClusterRuntimeGameTests {
             return;
         }
 
-        if (!controller.isNodeStoppingForTesting(nodeId)) {
+        if (controller.isNodeStopMarkerAbsentForTesting(nodeId)) {
             helper.fail("Stopped node should keep an evacuation marker during the transfer window");
             return;
         }
@@ -520,7 +518,7 @@ public final class ClusterRuntimeGameTests {
             }
 
             var route = controller.resolveGatewayRoute("gateway.test", playerUuid);
-            if (route.isEmpty() || route.get().nodeId() != null) {
+            if (route.isEmpty() || route.map(GatewayRoute::nodeId).orElse(null) != null) {
                 helper.fail("Player should route to host after node evacuation: " + playerUuid);
                 return;
             }

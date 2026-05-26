@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 public final class ProxyForwardingConfig {
@@ -45,7 +46,7 @@ public final class ProxyForwardingConfig {
         Path worldRoot;
         try {
             worldRoot = server.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize();
-        } catch (Exception exception) {
+        } catch (RuntimeException exception) {
             return Optional.empty();
         }
 
@@ -59,8 +60,8 @@ public final class ProxyForwardingConfig {
         return Optional.empty();
     }
 
-    private static ArrayList<Path> serverDirectoryCandidates(Path worldRoot) {
-        ArrayList<Path> candidates = new ArrayList<>(3);
+    private static List<Path> serverDirectoryCandidates(Path worldRoot) {
+        List<Path> candidates = new ArrayList<>(3);
         if (worldRoot == null) {
             return candidates;
         }
