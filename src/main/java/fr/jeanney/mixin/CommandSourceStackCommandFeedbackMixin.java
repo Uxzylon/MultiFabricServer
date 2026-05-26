@@ -5,21 +5,20 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import java.util.function.Supplier;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-
-import java.util.function.Supplier;
 
 @Mixin(CommandSourceStack.class)
 public abstract class CommandSourceStackCommandFeedbackMixin {
 
     @Inject(method = "sendSuccess", at = @At("TAIL"))
     private void multifabricserver$relayCrossClusterCommandFeedback(Supplier<Component> messageSupplier,
-            boolean broadcastToOps,
+            boolean broadcast,
             CallbackInfo ci) {
-        if (!broadcastToOps || messageSupplier == null) {
+        if (!broadcast || messageSupplier == null) {
             return;
         }
 
@@ -37,7 +36,7 @@ public abstract class CommandSourceStackCommandFeedbackMixin {
         Component feedback;
         try {
             feedback = messageSupplier.get();
-        } catch (Exception exception) {
+        } catch (RuntimeException exception) {
             return;
         }
 

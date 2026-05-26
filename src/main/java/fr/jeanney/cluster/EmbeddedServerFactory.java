@@ -1,6 +1,27 @@
 package fr.jeanney.cluster;
 
+import com.mojang.serialization.Dynamic;
+import com.mojang.serialization.Lifecycle;
 import fr.jeanney.MultiFabricServer;
+import java.io.IOException;
+import java.io.Reader;
+import java.io.Writer;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Optional;
+import java.util.Properties;
+import java.util.concurrent.TimeUnit;
+import java.util.Objects;
+
+import org.jspecify.annotations.NonNull;
+
 import net.minecraft.commands.Commands;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.Registries;
@@ -21,32 +42,11 @@ import net.minecraft.world.level.dimension.LevelStem;
 import net.minecraft.world.level.levelgen.WorldDimensions;
 import net.minecraft.world.level.levelgen.WorldGenSettings;
 import net.minecraft.world.level.storage.LevelDataAndDimensions;
-import net.minecraft.world.level.storage.LevelStorageSource;
 import net.minecraft.world.level.storage.LevelResource;
+import net.minecraft.world.level.storage.LevelStorageSource;
 import net.minecraft.world.level.storage.PrimaryLevelData;
 
-import com.mojang.serialization.Dynamic;
-import com.mojang.serialization.Lifecycle;
-import org.jspecify.annotations.NonNull;
-
-import java.io.IOException;
-import java.io.Reader;
-import java.io.Writer;
-import java.lang.reflect.Field;
-import java.lang.reflect.Constructor;
-import java.net.InetSocketAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Objects;
-import java.util.Properties;
-import java.util.Optional;
-import java.util.concurrent.TimeUnit;
-
-public final class EmbeddedServerFactory {
+final class EmbeddedServerFactory {
 
     private static final long STARTUP_TIMEOUT_MILLIS = TimeUnit.SECONDS.toMillis(60);
     private static final long STOP_TIMEOUT_MILLIS = TimeUnit.SECONDS.toMillis(30);
@@ -54,14 +54,14 @@ public final class EmbeddedServerFactory {
     private EmbeddedServerFactory() {
     }
 
-    public static Optional<EmbeddedServerHandle> tryStartEmbeddedServer(
+    static Optional<@NonNull EmbeddedServerHandle> tryStartEmbeddedServer(
             MinecraftServer hostServer,
             ClusterNodeDefinition definition,
-            Path nodeRoot) {
-        MultiFabricServer.LOGGER.info(
-                "[cluster-stop-debug] child start begin node={} host={} root={} thread={}",
+            @NonNull Path nodeRoot) {
+        MultiFabricServer.LOGGER.debug(
+                "Child start begin node={} host={} root={} thread={}",
                 definition.id(),
-                describeServer(hostServer),
+                ClusterServerIdentity.describe(hostServer),
                 nodeRoot,
                 Thread.currentThread().getName());
 
@@ -91,7 +91,6 @@ public final class EmbeddedServerFactory {
             waitUntilReady(definition, childServer, listenPort);
 
             int resolvedListenPort = childServer.getPort() > 0 ? childServer.getPort() : listenPort;
-            int resolvedTransferPort = resolvedListenPort;
 
             MultiFabricServer.LOGGER.info(
                     "Embedded child server '{}' is running for world '{}' on port {}",
@@ -99,10 +98,10 @@ public final class EmbeddedServerFactory {
                     definition.worldName(),
                     resolvedListenPort);
 
-            MultiFabricServer.LOGGER.info(
-                    "[cluster-stop-debug] child start complete node={} child={} port={} running={} stopped={} thread={}",
+            MultiFabricServer.LOGGER.debug(
+                    "Child start complete node={} child={} port={} running={} stopped={} thread={}",
                     definition.id(),
-                    describeServer(childServer),
+                    ClusterServerIdentity.describe(childServer),
                     resolvedListenPort,
                     childServer.isRunning(),
                     childServer.isStopped(),
@@ -112,17 +111,17 @@ public final class EmbeddedServerFactory {
                     definition.id(),
                     childServer,
                     resolvedListenPort,
-                    resolvedTransferPort));
+                    resolvedListenPort));
         } catch (Exception exception) {
             MultiFabricServer.LOGGER.error(
                     "Failed to start embedded child server '{}' for world '{}'",
                     definition.id(),
                     definition.worldName(),
                     exception);
-            MultiFabricServer.LOGGER.error(
-                    "[cluster-stop-debug] child start failure node={} host={} thread={}",
+            MultiFabricServer.LOGGER.debug(
+                    "Child start failure node={} host={} thread={}",
                     definition.id(),
-                    describeServer(hostServer),
+                    ClusterServerIdentity.describe(hostServer),
                     Thread.currentThread().getName());
             if (levelStorageAccess != null) {
                 try {
@@ -151,8 +150,7 @@ public final class EmbeddedServerFactory {
             }
         }
 
-        boolean hostSupportsAuthentication = hostServer.services().profileRepository() != null;
-        boolean onlineMode = hostSupportsAuthentication
+        boolean onlineMode = hostServer.services().profileRepository() != null
                 && readHostServerBooleanProperty(hostServer, "online-mode", true);
         // Default to non-enforced secure profile unless explicitly configured on host.
         boolean enforceSecureProfile = onlineMode
@@ -296,9 +294,9 @@ public final class EmbeddedServerFactory {
                             settings,
                             hostServer.getFixerUpper(),
                             resolveServices(hostServer));
-                    MinecraftServer server = (MinecraftServer) Objects.requireNonNull(
-                            instance,
-                            "DedicatedServer constructor returned null");
+                    if (!(instance instanceof MinecraftServer server)) {
+                        throw new IllegalStateException("Constructor did not produce a MinecraftServer instance");
+                    }
                     server.setPort(listenPort);
                     return server;
                 }
@@ -312,9 +310,9 @@ public final class EmbeddedServerFactory {
                             settings,
                             hostServer.getFixerUpper(),
                             resolveServices(hostServer));
-                    MinecraftServer server = (MinecraftServer) Objects.requireNonNull(
-                            instance,
-                            "DedicatedServer constructor returned null");
+                    if (!(instance instanceof MinecraftServer server)) {
+                        throw new IllegalStateException("Constructor did not produce a MinecraftServer instance");
+                    }
                     server.setPort(listenPort);
                     return server;
                 }
@@ -326,6 +324,7 @@ public final class EmbeddedServerFactory {
         throw new IllegalStateException("No supported DedicatedServer constructor was found");
     }
 
+    @SuppressWarnings("null")
     private static WorldStem buildWorldStem(
             DedicatedServerProperties dedicatedServerProperties,
             LevelStorageSource.LevelStorageAccess levelStorageAccess,
@@ -339,7 +338,7 @@ public final class EmbeddedServerFactory {
         Dynamic<?> finalExistingWorldData = existingWorldData;
 
         return Util.blockUntilDone(executor -> WorldLoader.load(
-                Objects.requireNonNull(initConfig),
+                initConfig,
                 dataLoadContext -> {
                     Registry<LevelStem> levelStemRegistry = dataLoadContext
                             .datapackDimensions()
@@ -358,14 +357,14 @@ public final class EmbeddedServerFactory {
                                 levelDataAndDimensions.dimensions().dimensionsRegistryAccess());
                     }
 
-                    return Objects.requireNonNull(
-                            createNewWorldData(dedicatedServerProperties, dataLoadContext, levelStemRegistry));
+                    return createNewWorldData(dedicatedServerProperties, dataLoadContext, levelStemRegistry);
                 },
                 WorldStem::new,
                 Util.backgroundExecutor(),
-                Objects.requireNonNull(executor))).get();
+                executor)).get();
     }
 
+    @SuppressWarnings("null")
     private static WorldLoader.InitConfig createInitConfig(
             DedicatedServerProperties dedicatedServerProperties,
             PackRepository packRepository) {
@@ -374,7 +373,7 @@ public final class EmbeddedServerFactory {
                 FeatureFlags.DEFAULT_FLAGS);
 
         WorldLoader.PackConfig packConfig = new WorldLoader.PackConfig(
-                Objects.requireNonNull(packRepository),
+                packRepository,
                 worldDataConfiguration,
                 false,
                 true);
@@ -385,10 +384,10 @@ public final class EmbeddedServerFactory {
                 dedicatedServerProperties.functionPermissions);
     }
 
-    private static WorldLoader.DataLoadOutput<LevelDataAndDimensions.@NonNull WorldDataAndGenSettings> createNewWorldData(
+    private static WorldLoader.DataLoadOutput<LevelDataAndDimensions.WorldDataAndGenSettings> createNewWorldData(
             DedicatedServerProperties dedicatedServerProperties,
             WorldLoader.DataLoadContext dataLoadContext,
-            Registry<LevelStem> levelStemRegistry) {
+            @NonNull Registry<LevelStem> levelStemRegistry) {
         LevelSettings levelSettings = new LevelSettings(
                 dedicatedServerProperties.levelName,
                 dedicatedServerProperties.gameMode.get(),
@@ -401,12 +400,13 @@ public final class EmbeddedServerFactory {
 
         WorldDimensions worldDimensions = dedicatedServerProperties
                 .createDimensions(dataLoadContext.datapackWorldgen());
-        WorldDimensions.Complete complete = worldDimensions.bake(Objects.requireNonNull(levelStemRegistry));
-        Lifecycle lifecycle = complete.lifecycle().add(dataLoadContext.datapackWorldgen().allRegistriesLifecycle());
+        WorldDimensions.Complete complete = worldDimensions.bake(levelStemRegistry);
+        Lifecycle lifecycle = Objects.requireNonNull(
+                complete.lifecycle().add(dataLoadContext.datapackWorldgen().allRegistriesLifecycle()));
         PrimaryLevelData primaryLevelData = new PrimaryLevelData(
                 levelSettings,
                 complete.specialWorldProperty(),
-                Objects.requireNonNull(lifecycle));
+                lifecycle);
 
         LevelDataAndDimensions.WorldDataAndGenSettings worldDataAndGenSettings = new LevelDataAndDimensions.WorldDataAndGenSettings(
                 primaryLevelData,
@@ -427,10 +427,10 @@ public final class EmbeddedServerFactory {
                     && !server.isStopped()
                     && server.getTickCount() > 0
                     && isEndpointReachable("127.0.0.1", listenPort)) {
-                MultiFabricServer.LOGGER.info(
-                        "[cluster-stop-debug] child ready node={} child={} port={} loops={} running={} stopped={} tick={} thread={}",
+                MultiFabricServer.LOGGER.debug(
+                        "Child ready node={} child={} port={} loops={} running={} stopped={} tick={} thread={}",
                         definition.id(),
-                        describeServer(server),
+                        ClusterServerIdentity.describe(server),
                         listenPort,
                         loopCount,
                         server.isRunning(),
@@ -441,20 +441,20 @@ public final class EmbeddedServerFactory {
             }
             if (server.isStopped()) {
                 MultiFabricServer.LOGGER.warn(
-                        "[cluster-stop-debug] child stopped during startup node={} child={} loops={} thread={}",
+                        "Child stopped during startup node={} child={} loops={} thread={}",
                         definition.id(),
-                        describeServer(server),
+                        ClusterServerIdentity.describe(server),
                         loopCount,
                         Thread.currentThread().getName());
                 throw new IllegalStateException(
                         "Child server stopped during startup for node '" + definition.id() + "'");
             }
-            Thread.sleep(100L);
+            pauseStartupPoll();
         }
         MultiFabricServer.LOGGER.error(
-                "[cluster-stop-debug] child startup timeout node={} child={} loops={} running={} stopped={} thread={}",
+                "Child startup timeout node={} child={} loops={} running={} stopped={} thread={}",
                 definition.id(),
-                describeServer(server),
+                ClusterServerIdentity.describe(server),
                 loopCount,
                 server.isRunning(),
                 server.isStopped(),
@@ -476,12 +476,20 @@ public final class EmbeddedServerFactory {
         }
     }
 
+    private static void pauseStartupPoll() throws InterruptedException {
+        TimeUnit.MILLISECONDS.sleep(100L);
+    }
+
+    private static void pauseStopPoll() throws InterruptedException {
+        TimeUnit.MILLISECONDS.sleep(50L);
+    }
+
     private record DedicatedEmbeddedServerHandle(String nodeId, MinecraftServer server, int resolvedListenPort,
             int resolvedTransferPort)
             implements EmbeddedServerHandle {
         @Override
-        public boolean isAlive() {
-            return server.isRunning() && !server.isStopped();
+        public boolean isStopped() {
+            return !server.isRunning() || server.isStopped();
         }
 
         @Override
@@ -500,7 +508,7 @@ public final class EmbeddedServerFactory {
 
         @Override
         public void tick() {
-            if (!isAlive()) {
+            if (isStopped()) {
                 MultiFabricServer.LOGGER.warn("Embedded child server '{}' is no longer alive", nodeId);
             }
         }
@@ -508,18 +516,18 @@ public final class EmbeddedServerFactory {
         @Override
         public void close() {
             if (server.isStopped()) {
-                MultiFabricServer.LOGGER.info(
-                        "[cluster-stop-debug] child close skipped node={} child={} alreadyStopped=true thread={}",
+                MultiFabricServer.LOGGER.debug(
+                        "Child close skipped node={} child={} alreadyStopped=true thread={}",
                         nodeId,
-                        describeServer(server),
+                        ClusterServerIdentity.describe(server),
                         Thread.currentThread().getName());
                 return;
             }
 
-            MultiFabricServer.LOGGER.info(
-                    "[cluster-stop-debug] child close begin node={} child={} running={} stopped={} tick={} thread={}",
+            MultiFabricServer.LOGGER.debug(
+                    "Child close begin node={} child={} running={} stopped={} tick={} thread={}",
                     nodeId,
-                    describeServer(server),
+                    ClusterServerIdentity.describe(server),
                     server.isRunning(),
                     server.isStopped(),
                     server.getTickCount(),
@@ -535,7 +543,7 @@ public final class EmbeddedServerFactory {
                     break;
                 }
                 try {
-                    Thread.sleep(50L);
+                    pauseStopPoll();
                 } catch (InterruptedException interruptedException) {
                     Thread.currentThread().interrupt();
                     break;
@@ -545,9 +553,9 @@ public final class EmbeddedServerFactory {
             boolean childThreadAlive = childThread != null ? childThread.isAlive() : !server.isStopped();
             if (childThreadAlive) {
                 MultiFabricServer.LOGGER.warn(
-                        "[cluster-stop-debug] child close timeout node={} child={} running={} stopped={} childThreadAlive={} tick={} thread={}",
+                        "Child close timeout node={} child={} running={} stopped={} childThreadAlive={} tick={} thread={}",
                         nodeId,
-                        describeServer(server),
+                        ClusterServerIdentity.describe(server),
                         server.isRunning(),
                         server.isStopped(),
                         childThreadAlive,
@@ -556,20 +564,16 @@ public final class EmbeddedServerFactory {
                 logServerThreadStack(nodeId, server);
             }
 
-            MultiFabricServer.LOGGER.info(
-                    "[cluster-stop-debug] child close end node={} child={} running={} stopped={} childThreadAlive={} tick={} thread={}",
+            MultiFabricServer.LOGGER.debug(
+                    "Child close end node={} child={} running={} stopped={} childThreadAlive={} tick={} thread={}",
                     nodeId,
-                    describeServer(server),
+                    ClusterServerIdentity.describe(server),
                     server.isRunning(),
                     server.isStopped(),
                     childThreadAlive,
                     server.getTickCount(),
                     Thread.currentThread().getName());
         }
-    }
-
-    private static String describeServer(MinecraftServer server) {
-        return server.getClass().getSimpleName() + "@" + Integer.toHexString(System.identityHashCode(server));
     }
 
     private static Thread resolveServerThread(MinecraftServer server) {
@@ -580,7 +584,7 @@ public final class EmbeddedServerFactory {
             if (threadObj instanceof Thread thread) {
                 return thread;
             }
-        } catch (Exception ignored) {
+        } catch (ReflectiveOperationException | RuntimeException ignored) {
         }
         return null;
     }
@@ -594,8 +598,8 @@ public final class EmbeddedServerFactory {
 
             StackTraceElement[] stack = serverThread.getStackTrace();
             if (stack.length == 0) {
-                MultiFabricServer.LOGGER.info(
-                        "[cluster-stop-debug] child close timeout stack empty node={} childThread={}",
+                MultiFabricServer.LOGGER.debug(
+                        "Child close timeout stack empty node={} childThread={}",
                         nodeId,
                         serverThread.getName());
                 return;
@@ -607,16 +611,16 @@ public final class EmbeddedServerFactory {
             }
 
             MultiFabricServer.LOGGER.warn(
-                    "[cluster-stop-debug] child close timeout thread dump node={} childThread={} state={}{}",
+                    "Child close timeout thread dump node={} childThread={} state={}{}",
                     nodeId,
                     serverThread.getName(),
                     serverThread.getState(),
                     stackTrace);
-        } catch (Exception exception) {
+        } catch (RuntimeException exception) {
             MultiFabricServer.LOGGER.warn(
-                    "[cluster-stop-debug] failed to capture child thread stack node={} child={}",
+                    "Failed to capture child thread stack node={} child={}",
                     nodeId,
-                    describeServer(server),
+                    ClusterServerIdentity.describe(server),
                     exception);
         }
     }

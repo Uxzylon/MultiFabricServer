@@ -1,35 +1,34 @@
 package fr.jeanney.cluster.network;
 
-import net.minecraft.network.FriendlyByteBuf;
-import net.minecraft.network.codec.StreamCodec;
-import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
-import net.minecraft.resources.Identifier;
-
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.Objects;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.codec.StreamCodec;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.resources.Identifier;
+import org.jspecify.annotations.NonNull;
 
-@SuppressWarnings("null")
 public record ClusterRegisterPayload(String proxyServerName, String backendHost, int backendPort)
         implements CustomPacketPayload {
 
     private static final String MAGIC = "MultiFabricServerRegister";
     public static final String CHANNEL = "multifabricserver:cluster_register";
 
-    public static final CustomPacketPayload.Type<ClusterRegisterPayload> TYPE = new CustomPacketPayload.Type<>(
-            Identifier.parse(CHANNEL));
+    public static final CustomPacketPayload.@NonNull Type<ClusterRegisterPayload> TYPE = createType();
 
-    public static final StreamCodec<FriendlyByteBuf, ClusterRegisterPayload> STREAM_CODEC = CustomPacketPayload
-            .codec(ClusterRegisterPayload::write, ClusterRegisterPayload::new);
+    public static final @NonNull StreamCodec<FriendlyByteBuf, ClusterRegisterPayload> STREAM_CODEC = createCodec();
 
     public ClusterRegisterPayload {
-        if (proxyServerName == null || proxyServerName.isBlank()) {
+        proxyServerName = Objects.requireNonNull(proxyServerName, "proxyServerName");
+        backendHost = Objects.requireNonNull(backendHost, "backendHost");
+        if (proxyServerName.isBlank()) {
             throw new IllegalArgumentException("Proxy server name cannot be blank");
         }
-        if (backendHost == null || backendHost.isBlank()) {
+        if (backendHost.isBlank()) {
             throw new IllegalArgumentException("Backend host cannot be blank");
         }
         if (backendPort <= 0 || backendPort > 65535) {
@@ -45,13 +44,14 @@ public record ClusterRegisterPayload(String proxyServerName, String backendHost,
         this(decoded.proxyServerName(), decoded.backendHost(), decoded.backendPort());
     }
 
+    @SuppressWarnings("null")
     private void write(FriendlyByteBuf buffer) {
         byte[] payloadBytes = encode(proxyServerName, backendHost, backendPort);
-        buffer.writeBytes(Objects.requireNonNull(payloadBytes));
+        buffer.writeBytes(payloadBytes);
     }
 
     @Override
-    public Type<ClusterRegisterPayload> type() {
+    public CustomPacketPayload.@NonNull Type<ClusterRegisterPayload> type() {
         return TYPE;
     }
 
@@ -80,6 +80,8 @@ public record ClusterRegisterPayload(String proxyServerName, String backendHost,
     }
 
     private static byte[] encode(String proxyServerName, String backendHost, int backendPort) {
+        Objects.requireNonNull(proxyServerName, "proxyServerName");
+        Objects.requireNonNull(backendHost, "backendHost");
         ByteArrayOutputStream byteOutput = new ByteArrayOutputStream();
         try (DataOutputStream dataOutput = new DataOutputStream(byteOutput)) {
             dataOutput.writeUTF(MAGIC);
@@ -94,5 +96,17 @@ public record ClusterRegisterPayload(String proxyServerName, String backendHost,
     }
 
     private record Decoded(String proxyServerName, String backendHost, int backendPort) {
+        private Decoded {
+            proxyServerName = Objects.requireNonNull(proxyServerName, "proxyServerName");
+            backendHost = Objects.requireNonNull(backendHost, "backendHost");
+        }
+    }
+
+    private static CustomPacketPayload.@NonNull Type<ClusterRegisterPayload> createType() {
+        return new CustomPacketPayload.Type<>(Identifier.parse(CHANNEL));
+    }
+
+    private static @NonNull StreamCodec<FriendlyByteBuf, ClusterRegisterPayload> createCodec() {
+        return CustomPacketPayload.codec(ClusterRegisterPayload::write, ClusterRegisterPayload::new);
     }
 }

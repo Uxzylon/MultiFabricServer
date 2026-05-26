@@ -1,6 +1,7 @@
 package fr.jeanney.mixin;
 
 import fr.jeanney.MultiFabricServer;
+import fr.jeanney.cluster.ClusterServerIdentity;
 import net.minecraft.server.dedicated.DedicatedServer;
 import net.minecraft.util.Util;
 import org.spongepowered.asm.mixin.Mixin;
@@ -14,9 +15,9 @@ public abstract class DedicatedServerChildShutdownMixin {
     private void multifabricserver$skipGlobalExecutorShutdownForClusterChild() {
         DedicatedServer server = (DedicatedServer) (Object) this;
         if (MultiFabricServer.clusterController().shouldSkipGlobalExecutorShutdownForServerStop(server)) {
-            MultiFabricServer.LOGGER.info(
-                    "[cluster-stop-debug] suppressing global executor shutdown for child server={}",
-                    server.getClass().getSimpleName() + "@" + Integer.toHexString(System.identityHashCode(server)));
+            MultiFabricServer.LOGGER.debug(
+                    "Suppressing global executor shutdown for child server={}",
+                    ClusterServerIdentity.describe(server));
             return;
         }
         Util.shutdownExecutors();

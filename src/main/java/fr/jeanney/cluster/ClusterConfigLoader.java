@@ -19,14 +19,14 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
-public final class ClusterConfigLoader {
+final class ClusterConfigLoader {
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     private ClusterConfigLoader() {
     }
 
-    public static ClusterConfig load(MinecraftServer server) {
+    static ClusterConfig load(MinecraftServer server) {
         Path path = resolveConfigPath(server);
 
         if (!Files.exists(path)) {
@@ -50,7 +50,7 @@ public final class ClusterConfigLoader {
         }
     }
 
-    public static Path resolveConfigPath(MinecraftServer server) {
+    static Path resolveConfigPath(MinecraftServer server) {
         return server.getWorldPath(LevelResource.ROOT).resolve("multifabricserver-cluster.json");
     }
 
@@ -99,7 +99,7 @@ public final class ClusterConfigLoader {
         }
         try {
             return object.get(key).getAsBoolean();
-        } catch (Exception ignored) {
+        } catch (RuntimeException ignored) {
             return fallback;
         }
     }
@@ -111,7 +111,7 @@ public final class ClusterConfigLoader {
         try {
             int parsed = object.get(key).getAsInt();
             return parsed < 0 ? fallback : parsed;
-        } catch (Exception ignored) {
+        } catch (RuntimeException ignored) {
             return fallback;
         }
     }
@@ -125,7 +125,7 @@ public final class ClusterConfigLoader {
         }
     }
 
-    public static void save(MinecraftServer server, ClusterConfig config) {
+    static void save(MinecraftServer server, ClusterConfig config) {
         Path path = resolveConfigPath(server);
         try {
             writeConfig(path, config);

@@ -1,20 +1,22 @@
 package fr.jeanney.mixin;
 
 import fr.jeanney.MultiFabricServer;
+import fr.jeanney.cluster.ClusterServerIdentity;
+import java.io.IOException;
+import java.util.function.BooleanSupplier;
+import java.util.function.Predicate;
+import java.util.stream.Stream;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
+
+import org.jspecify.annotations.NonNull;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-
-import java.io.IOException;
-import java.util.Objects;
-import java.util.function.Predicate;
-import java.util.function.BooleanSupplier;
-import java.util.stream.Stream;
 
 @Mixin(MinecraftServer.class)
 public abstract class MinecraftServerChildShutdownMixin {
@@ -23,9 +25,9 @@ public abstract class MinecraftServerChildShutdownMixin {
     private boolean multifabricserver$skipChildStopServerChunkWorkLoop(Stream<?> stream, Predicate<Object> predicate) {
         MinecraftServer server = (MinecraftServer) (Object) this;
         if (MultiFabricServer.clusterController().shouldSkipChunkWorkLoopForServerStop(server)) {
-            MultiFabricServer.LOGGER.info(
-                    "[cluster-stop-debug] suppressing child chunk-work wait loop server={}",
-                    server.getClass().getSimpleName() + "@" + Integer.toHexString(System.identityHashCode(server)));
+            MultiFabricServer.LOGGER.debug(
+                    "Suppressing child chunk-work wait loop server={}",
+                    ClusterServerIdentity.describe(server));
             return false;
         }
         return stream.anyMatch(predicate);
@@ -46,13 +48,13 @@ public abstract class MinecraftServerChildShutdownMixin {
     @Redirect(method = "stopServer", at = @At(value = "INVOKE", target = "Lnet/minecraft/server/MinecraftServer;saveAllChunks(ZZZ)Z"))
     private boolean multifabricserver$skipChildSaveAllChunks(
             MinecraftServer server,
-            boolean suppressLog,
+            boolean silent,
             boolean flush,
             boolean force) {
         if (shouldSkipPersistence(server)) {
             return true;
         }
-        return server.saveAllChunks(suppressLog, flush, force);
+        return server.saveAllChunks(silent, flush, force);
     }
 
     @Redirect(method = "stopServer", at = @At(value = "INVOKE", target = "Lnet/minecraft/server/level/ServerChunkCache;deactivateTicketsOnClosing()V"))
@@ -65,13 +67,13 @@ public abstract class MinecraftServerChildShutdownMixin {
     }
 
     @Redirect(method = "stopServer", at = @At(value = "INVOKE", target = "Lnet/minecraft/server/level/ServerChunkCache;tick(Ljava/util/function/BooleanSupplier;Z)V"))
-    private void multifabricserver$skipChildChunkTick(ServerChunkCache chunkCache, BooleanSupplier hasTimeLeft,
-            boolean runAllTasks) {
+    private void multifabricserver$skipChildChunkTick(ServerChunkCache chunkCache, @NonNull BooleanSupplier haveTime,
+            boolean tickChunks) {
         MinecraftServer server = (MinecraftServer) (Object) this;
         if (shouldSkipPersistence(server)) {
             return;
         }
-        chunkCache.tick(Objects.requireNonNull(hasTimeLeft), runAllTasks);
+        chunkCache.tick(haveTime, tickChunks);
     }
 
     @Redirect(method = "stopServer", at = @At(value = "INVOKE", target = "Lnet/minecraft/server/level/ServerLevel;close()V"))
@@ -83,12 +85,13 @@ public abstract class MinecraftServerChildShutdownMixin {
         level.close();
     }
 
+    @Unique
     private boolean shouldSkipPersistence(MinecraftServer server) {
         boolean shouldSkip = MultiFabricServer.clusterController().shouldSkipPersistenceForServerStop(server);
         if (shouldSkip) {
-            MultiFabricServer.LOGGER.info(
-                    "[cluster-stop-debug] suppressing child persistence during host shutdown server={}",
-                    server.getClass().getSimpleName() + "@" + Integer.toHexString(System.identityHashCode(server)));
+            MultiFabricServer.LOGGER.debug(
+                    "Suppressing child persistence during host shutdown server={}",
+                    ClusterServerIdentity.describe(server));
         }
         return shouldSkip;
     }

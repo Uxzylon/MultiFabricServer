@@ -8,26 +8,24 @@ import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.ServerConnection;
 import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
+import com.velocitypowered.api.proxy.server.RegisteredServer;
 import com.velocitypowered.api.proxy.server.ServerInfo;
-import org.slf4j.Logger;
-
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.Optional;
+import java.util.regex.Pattern;
+import org.slf4j.Logger;
 
-@Plugin(
-        id = "multifabricserver",
-        name = "MultiFabricServer",
-        version = "1.0.0",
-        description = "Dynamic Velocity backend registration for MultiFabricServer clusters",
-        authors = {"Uxzylon"})
+@Plugin(id = "multifabricserver", name = "MultiFabricServer", version = "1.0.0", description = "Dynamic Velocity backend registration for MultiFabricServer clusters", authors = {
+        "Uxzylon" })
 public final class MultiFabricServerVelocityPlugin {
 
     private static final MinecraftChannelIdentifier REGISTER_CHANNEL = MinecraftChannelIdentifier.from(
             "multifabricserver:cluster_register");
     private static final String MAGIC = "MultiFabricServerRegister";
+    private static final Pattern SAFE_SERVER_NAME = Pattern.compile("[A-Za-z0-9_.-]+");
 
     private final ProxyServer proxyServer;
     private final Logger logger;
@@ -74,7 +72,7 @@ public final class MultiFabricServerVelocityPlugin {
                 new InetSocketAddress(target.backendHost(), target.backendPort()));
 
         Optional<ServerInfo> existingInfo = proxyServer.getServer(target.serverName())
-                .map(existing -> existing.getServerInfo());
+                .map(RegisteredServer::getServerInfo);
         if (existingInfo.isPresent() && existingInfo.get().getAddress().equals(serverInfo.getAddress())) {
             logger.debug(
                     "Dynamic cluster backend '{}' is already registered at {}:{}",
@@ -84,7 +82,7 @@ public final class MultiFabricServerVelocityPlugin {
             return;
         }
 
-        existingInfo.ifPresent(existing -> proxyServer.unregisterServer(existing));
+        existingInfo.ifPresent(proxyServer::unregisterServer);
 
         proxyServer.registerServer(serverInfo);
         logger.info(
@@ -105,7 +103,7 @@ public final class MultiFabricServerVelocityPlugin {
             String serverName = input.readUTF();
             String backendHost = input.readUTF();
             int backendPort = input.readUnsignedShort();
-            if (serverName.isBlank() || backendHost.isBlank() || backendPort <= 0) {
+            if (serverName.isBlank() || backendHost.isBlank() || backendPort == 0) {
                 return Optional.empty();
             }
             return Optional.of(new ClusterRegistration(serverName, backendHost, backendPort));
@@ -115,7 +113,7 @@ public final class MultiFabricServerVelocityPlugin {
     }
 
     private static boolean isSafeServerName(String serverName) {
-        return serverName.length() <= 64 && serverName.matches("[A-Za-z0-9_.-]+");
+        return serverName.length() <= 64 && SAFE_SERVER_NAME.matcher(serverName).matches();
     }
 
     private record ClusterRegistration(String serverName, String backendHost, int backendPort) {
