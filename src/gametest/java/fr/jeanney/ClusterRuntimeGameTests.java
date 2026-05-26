@@ -360,6 +360,31 @@ public final class ClusterRuntimeGameTests {
         helper.succeed();
     }
 
+    @GameTest(maxTicks = 4000)
+    public void evacuatedOfflinePlayerGetsHostReturnNotice(GameTestHelper helper) {
+        MinecraftServer server = helper.getLevel().getServer();
+        var controller = new IntegratedClusterController();
+        String nodeId = "offlinenode";
+        String playerUuid = "00000000-0000-0000-0000-000000000241";
+
+        controller.configureSingleNodeForTesting(server, nodeId);
+        controller.rememberPlayerCluster(server, playerUuid, nodeId);
+
+        if (!controller.stopNode(nodeId)) {
+            helper.fail("Expected node stop to succeed");
+            return;
+        }
+
+        var pendingNotice = controller.pendingHostRouteMessageForTesting(playerUuid);
+        if (pendingNotice.isEmpty() || !nodeId.equals(pendingNotice.get())) {
+            helper.fail("Expected offline player to receive a pending host return notice for " + nodeId);
+            return;
+        }
+        assertNodeEvacuated(helper, controller, nodeId, playerUuid);
+
+        helper.succeed();
+    }
+
     @GameTest(maxTicks = 200)
     public void sharedPresenceTracksAndFiltersRemotePlayers(GameTestHelper helper) {
         var controller = MultiFabricServer.clusterController();
@@ -424,6 +449,55 @@ public final class ClusterRuntimeGameTests {
 
         controller.removeSharedPlayerPresenceForTesting(hostViewerUuid);
         controller.removeSharedPlayerPresenceForTesting(clusterPlayerUuid);
+
+        helper.succeed();
+    }
+
+    @GameTest(maxTicks = 400)
+    public void dynmapListsEnabledClusterWorldsBeforeNodeStarts(GameTestHelper helper) {
+        MinecraftServer server = helper.getLevel().getServer();
+        var controller = MultiFabricServer.clusterController();
+
+        Path configPath = server.getWorldPath(LevelResource.ROOT).resolve("multifabricserver-cluster.json");
+        try {
+            writeConfig(configPath, new NodeSpec("testnode", true), new NodeSpec("disablednode", false));
+        } catch (IOException ioException) {
+            helper.fail("Failed to write cluster config for test: " + ioException.getMessage());
+            return;
+        }
+
+        controller.reloadFromDisk(server);
+        var worlds = controller.enabledDynmapClusterWorlds(server);
+
+        if (worlds.size() != 3) {
+            helper.fail("Expected exactly 3 dynmap worlds for one enabled cluster, got " + worlds.size());
+            return;
+        }
+        if (worlds.stream().noneMatch(world -> "testnode".equals(world.name())
+                && "testnode (overworld)".equals(world.title())
+                && !world.nether()
+                && !world.theEnd())) {
+            helper.fail("Enabled cluster overworld should be listed for dynmap before startup");
+            return;
+        }
+        if (worlds.stream().noneMatch(world -> "testnode_nether".equals(world.name())
+                && "testnode (nether)".equals(world.title())
+                && world.nether()
+                && !world.theEnd())) {
+            helper.fail("Enabled cluster nether should be listed for dynmap before startup");
+            return;
+        }
+        if (worlds.stream().noneMatch(world -> "testnode_the_end".equals(world.name())
+                && "testnode (end)".equals(world.title())
+                && !world.nether()
+                && world.theEnd())) {
+            helper.fail("Enabled cluster end should be listed for dynmap before startup");
+            return;
+        }
+        if (worlds.stream().anyMatch(world -> world.name().startsWith("disablednode"))) {
+            helper.fail("Disabled cluster worlds should not be listed for dynmap");
+            return;
+        }
 
         helper.succeed();
     }

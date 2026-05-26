@@ -187,6 +187,7 @@ abstract class ClusterControllerMarkers extends ClusterControllerBase {
         for (String playerUuid : playerUuids) {
             playerClusterAffinities.remove(playerUuid);
             forceHostRoutePlayerUuids.add(playerUuid);
+            pendingHostRouteMessagesByPlayer.put(playerUuid, nodeId);
         }
     }
 }

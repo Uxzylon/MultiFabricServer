@@ -1,6 +1,8 @@
 package fr.jeanney.mixin;
 
 import fr.jeanney.MultiFabricServer;
+import fr.jeanney.cluster.ClusterDynmapSyncListeners;
+import fr.jeanney.cluster.ClusterDynmapWorld;
 import fr.jeanney.cluster.ClusterRemovalListeners;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -48,9 +50,9 @@ public abstract class DynmapCompatMixins {
     }
 
     @Inject(method = "serverStarted", at = @At("TAIL"), remap = false, require = 0)
-    private void multifabricserver$pruneOrphanedClusterWorlds(MinecraftServer server, CallbackInfo callbackInfo) {
+    private void multifabricserver$syncClusterWorlds(MinecraftServer server, CallbackInfo callbackInfo) {
         if (!isClusterChildServer(server)) {
-            pruneOrphanedClusterWorlds(this, server);
+            syncClusterWorlds(this, server);
         }
     }
 
@@ -81,8 +83,14 @@ public abstract class DynmapCompatMixins {
     }
 
     @Unique
-    private static synchronized void pruneOrphanedClusterWorlds(Object plugin, MinecraftServer server) {
+    private static synchronized void syncClusterWorlds(Object plugin, MinecraftServer server) {
         rememberPlugin(plugin);
+        removeDisabledOrOrphanedClusterWorlds(plugin, server);
+        ensureEnabledClusterWorlds(plugin, server);
+    }
+
+    @Unique
+    private static void removeDisabledOrOrphanedClusterWorlds(Object plugin, MinecraftServer server) {
         Object worldsObject = readField(plugin, "worlds");
         if (!(worldsObject instanceof Map<?, ?> worlds)) {
             return;
@@ -96,13 +104,49 @@ public abstract class DynmapCompatMixins {
 
             Object world = entry.getValue();
             String title = invokeString(world, "getTitle");
-            boolean loaded = invokeBoolean(world, "isLoaded");
-            if (MultiFabricServer.clusterController().shouldPruneDynmapSavedWorld(server, worldName, title, loaded)) {
+            if (MultiFabricServer.clusterController().shouldPruneDynmapSavedWorld(server, worldName, title, false)) {
                 worldsToPrune.add(worldName);
             }
         }
 
         removeWorlds(plugin, worldsToPrune);
+    }
+
+    @Unique
+    private static void ensureEnabledClusterWorlds(Object plugin, MinecraftServer server) {
+        Object worldsObject = readField(plugin, "worlds");
+        if (!(worldsObject instanceof Map<?, ?> worlds)) {
+            return;
+        }
+
+        Object core = readField(plugin, "core");
+        if (core == null) {
+            return;
+        }
+
+        List<String> addedWorlds = new ArrayList<>();
+        for (ClusterDynmapWorld worldDefinition : MultiFabricServer.clusterController()
+                .enabledDynmapClusterWorlds(server)) {
+            if (worlds.containsKey(worldDefinition.name())) {
+                continue;
+            }
+
+            Object dynmapWorld = createSavedFabricWorld(plugin, worldDefinition);
+            if (dynmapWorld == null) {
+                continue;
+            }
+
+            invokeNoArgument(dynmapWorld, "setWorldUnloaded");
+            invokeOneArgument(core, "processWorldLoad", dynmapWorld);
+            putWorld(worlds, worldDefinition.name(), dynmapWorld);
+            addedWorlds.add(worldDefinition.name());
+        }
+
+        if (!addedWorlds.isEmpty()) {
+            invokeNoArgument(core, "updateConfigHashcode");
+            MultiFabricServer.LOGGER.info(
+                    "Added {} Dynmap cluster world(s): {}", addedWorlds.size(), String.join(", ", addedWorlds));
+        }
     }
 
     @Unique
@@ -112,8 +156,54 @@ public abstract class DynmapCompatMixins {
         }
         if (!removalListenerRegistered) {
             ClusterRemovalListeners.register(DynmapCompatMixins::removeClusterWorlds);
+            ClusterDynmapSyncListeners.register(server -> syncClusterWorlds(dynmapPlugin, server));
             removalListenerRegistered = true;
         }
+    }
+
+    @Unique
+    private static Object createSavedFabricWorld(Object plugin, ClusterDynmapWorld worldDefinition) {
+        try {
+            Class<?> fabricWorldClass = Class.forName(
+                    "org.dynmap.fabric_26_1.FabricWorld",
+                    false,
+                    plugin.getClass().getClassLoader());
+            Class<?> dynmapPluginClass = Class.forName(
+                    "org.dynmap.fabric_26_1.DynmapPlugin",
+                    false,
+                    plugin.getClass().getClassLoader());
+            return fabricWorldClass
+                    .getConstructor(
+                            dynmapPluginClass,
+                            String.class,
+                            int.class,
+                            int.class,
+                            boolean.class,
+                            boolean.class,
+                            String.class,
+                            int.class)
+                    .newInstance(
+                            plugin,
+                            worldDefinition.name(),
+                            worldDefinition.height(),
+                            worldDefinition.seaLevel(),
+                            worldDefinition.nether(),
+                            worldDefinition.theEnd(),
+                            worldDefinition.title(),
+                            worldDefinition.minY());
+        } catch (ReflectiveOperationException exception) {
+            MultiFabricServer.LOGGER.warn(
+                    "Failed to create saved Dynmap world for enabled cluster '{}'",
+                    worldDefinition.name(),
+                    exception);
+            return null;
+        }
+    }
+
+    @Unique
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    private static void putWorld(Map<?, ?> worlds, String name, Object world) {
+        ((Map) worlds).put(name, world);
     }
 
     @Unique
@@ -195,12 +285,6 @@ public abstract class DynmapCompatMixins {
     }
 
     @Unique
-    private static boolean invokeBoolean(Object target, String methodName) {
-        Object value = invokeNoArgument(target, methodName);
-        return value instanceof Boolean booleanValue && booleanValue;
-    }
-
-    @Unique
     private static void invokeStringArgument(Object target, String methodName, String argument) {
         if (target == null) {
             return;
@@ -212,6 +296,30 @@ public abstract class DynmapCompatMixins {
             method.invoke(target, argument);
         } catch (ReflectiveOperationException ignored) {
         }
+    }
+
+    @Unique
+    private static Object invokeOneArgument(Object target, String methodName, Object argument) {
+        if (target == null || argument == null) {
+            return null;
+        }
+
+        for (Method method : target.getClass().getMethods()) {
+            Class<?>[] parameterTypes = method.getParameterTypes();
+            if (!methodName.equals(method.getName()) || parameterTypes.length != 1
+                    || !parameterTypes[0].isAssignableFrom(argument.getClass())) {
+                continue;
+            }
+
+            try {
+                method.setAccessible(true);
+                return method.invoke(target, argument);
+            } catch (ReflectiveOperationException ignored) {
+                return null;
+            }
+        }
+
+        return null;
     }
 }
 
