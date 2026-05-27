@@ -13,8 +13,8 @@ abstract class ClusterControllerMarkers extends ClusterControllerBase {
         }
 
         if (forceHostRoutePlayerUuids.contains(playerUuid)) {
-            MultiFabricServer.LOGGER.info("Skipping affinity save for player {} "
-                    + "due pending explicit host travel",
+            MultiFabricServer.LOGGER.info(
+                    "Skipping affinity save for player {} due pending explicit host travel",
                     playerName);
             return;
         }
@@ -29,7 +29,9 @@ abstract class ClusterControllerMarkers extends ClusterControllerBase {
             forceHostRoutePlayerUuids.add(playerUuid);
             persistRuntimeState(server);
             MultiFabricServer.LOGGER.info(
-                    "Skipping affinity save for player {} because node {} is stopping", playerName, nodeId);
+                    "Skipping affinity save for player {} because node {} is stopping",
+                    playerName,
+                    nodeId);
             return;
         }
 
@@ -38,9 +40,10 @@ abstract class ClusterControllerMarkers extends ClusterControllerBase {
             playerClusterAffinities.remove(playerUuid);
             forceHostRoutePlayerUuids.add(playerUuid);
             persistRuntimeState(server);
-            MultiFabricServer.LOGGER.info("Skipping affinity save for player {} "
-                    + "because node {} is no longer available",
-                    playerName, nodeId);
+            MultiFabricServer.LOGGER.info(
+                    "Skipping affinity save for player {} because node {} is no longer available",
+                    playerName,
+                    nodeId);
             return;
         }
 

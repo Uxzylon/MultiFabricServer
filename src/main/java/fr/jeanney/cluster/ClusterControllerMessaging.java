@@ -45,8 +45,6 @@ abstract class ClusterControllerMessaging extends ClusterControllerTabs {
             return;
         }
 
-        MutableComponent relayedMessage = buildCrossClusterMessagePrefix(sourceCluster).append(message.copy());
-
         for (MinecraftServer target : targets) {
             if (target.isStopped()) {
                 continue;
@@ -54,7 +52,8 @@ abstract class ClusterControllerMessaging extends ClusterControllerTabs {
 
             target.execute(() -> {
                 for (ServerPlayer targetPlayer : target.getPlayerList().getPlayers()) {
-                    targetPlayer.sendSystemMessage(relayedMessage.copy());
+                    targetPlayer.sendSystemMessage(buildCrossClusterMessagePrefix(targetPlayer, sourceCluster)
+                            .append(message.copy()));
                 }
             });
         }
@@ -71,7 +70,7 @@ abstract class ClusterControllerMessaging extends ClusterControllerTabs {
         }
 
         String sourceCluster;
-        String renderedLine;
+        String senderName;
         List<MinecraftServer> targets;
         synchronized (this) {
             if (!initialized || ownerServer == null) {
@@ -79,7 +78,7 @@ abstract class ClusterControllerMessaging extends ClusterControllerTabs {
             }
 
             sourceCluster = clusterLabelForNodeId(nodeIdForServer(sourceServer));
-            renderedLine = "<" + sender.getScoreboardName() + "> " + chatText;
+            senderName = sender.getScoreboardName();
             targets = relayTargets(sourceServer);
         }
 
@@ -87,14 +86,18 @@ abstract class ClusterControllerMessaging extends ClusterControllerTabs {
             return;
         }
 
-        MutableComponent relayMessage = buildCrossClusterMessagePrefix(sourceCluster)
-                .append(Component.literal(renderedLine));
-
         for (MinecraftServer target : targets) {
             if (target.isStopped()) {
                 continue;
             }
-            target.execute(() -> target.getPlayerList().broadcastSystemMessage(relayMessage, false));
+            target.execute(() -> {
+                for (ServerPlayer targetPlayer : target.getPlayerList().getPlayers()) {
+                    targetPlayer.sendSystemMessage(buildCrossClusterMessagePrefix(targetPlayer, sourceCluster)
+                            .append(ClusterMessages.component(targetPlayer, "chat.cross_cluster.line",
+                                    ClusterMessages.arg("player", senderName),
+                                    ClusterMessages.arg("message", chatText))));
+                }
+            });
         }
     }
 
@@ -118,13 +121,16 @@ abstract class ClusterControllerMessaging extends ClusterControllerTabs {
             return;
         }
 
-        MutableComponent relayedMessage = buildCrossClusterMessagePrefix(sourceCluster).append(message.copy());
-
         for (MinecraftServer target : targets) {
             if (target.isStopped()) {
                 continue;
             }
-            target.execute(() -> target.getPlayerList().broadcastSystemMessage(relayedMessage, false));
+            target.execute(() -> {
+                for (ServerPlayer targetPlayer : target.getPlayerList().getPlayers()) {
+                    targetPlayer.sendSystemMessage(buildCrossClusterMessagePrefix(targetPlayer, sourceCluster)
+                            .append(message.copy()));
+                }
+            });
         }
     }
 
@@ -151,7 +157,6 @@ abstract class ClusterControllerMessaging extends ClusterControllerTabs {
         Component adminFeedback = Component
                 .translatable("chat.type.admin", sourcePlayer.getDisplayName(), feedback.copy())
                 .withStyle(ChatFormatting.GRAY, ChatFormatting.ITALIC);
-        MutableComponent relayedMessage = buildCrossClusterMessagePrefix(sourceCluster).append(adminFeedback);
 
         for (MinecraftServer target : targets) {
             if (target.isStopped()) {
@@ -163,7 +168,8 @@ abstract class ClusterControllerMessaging extends ClusterControllerTabs {
                     if (!hasOpFeedbackPermission(targetPlayer)) {
                         continue;
                     }
-                    targetPlayer.sendSystemMessage(relayedMessage.copy());
+                    targetPlayer.sendSystemMessage(buildCrossClusterMessagePrefix(targetPlayer, sourceCluster)
+                            .append(adminFeedback.copy()));
                 }
             });
         }
@@ -181,22 +187,21 @@ abstract class ClusterControllerMessaging extends ClusterControllerTabs {
         return player.createCommandSourceStack().permissions().hasPermission(permission);
     }
 
-    protected static MutableComponent buildCrossClusterMessagePrefix(String clusterLabel) {
-        MutableComponent root = Component.empty();
-        root.append(Component.literal("[" + clusterLabelForNodeId(clusterLabel) + "] ").withStyle(ChatFormatting.GRAY));
-        return root;
+    protected static MutableComponent buildCrossClusterMessagePrefix(ServerPlayer targetPlayer, String clusterLabel) {
+        return ClusterMessages.component(targetPlayer, "chat.cross_cluster.prefix",
+                ClusterMessages.arg("cluster", clusterLabelForNodeId(clusterLabel)));
     }
 
-    protected void broadcastSharedLifecycleMessage(Component message) {
-        if (message == null) {
-            return;
-        }
-
+    protected void broadcastSharedLifecycleMessage(String key, ClusterMessages.Arg... args) {
         for (MinecraftServer target : allServersWithPossibleViewers()) {
             if (target.isStopped()) {
                 continue;
             }
-            target.execute(() -> target.getPlayerList().broadcastSystemMessage(message, false));
+            target.execute(() -> {
+                for (ServerPlayer targetPlayer : target.getPlayerList().getPlayers()) {
+                    targetPlayer.sendSystemMessage(ClusterMessages.component(targetPlayer, key, args));
+                }
+            });
         }
     }
 

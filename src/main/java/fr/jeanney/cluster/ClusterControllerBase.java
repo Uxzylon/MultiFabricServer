@@ -15,8 +15,6 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
-import org.jspecify.annotations.NonNull;
-
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.server.MinecraftServer;
@@ -194,9 +192,11 @@ abstract class ClusterControllerBase {
 
     protected static void logProxyTargetRequirement(ServerPlayer player, String targetNodeId, String proxyServerName) {
         String playerName = player == null ? "unknown" : player.getScoreboardName();
-        MultiFabricServer.LOGGER.info("Requesting seamless proxy switch for player {} to cluster '{}' "
-                + "through proxy server name '{}'",
-                playerName, targetNodeId, proxyServerName);
+        MultiFabricServer.LOGGER.info(
+                "Requesting seamless proxy switch for player {} to cluster '{}' through proxy server name '{}'",
+                playerName,
+                targetNodeId,
+                proxyServerName);
     }
 
     protected static boolean waitForEndpoint(String host, int port, long timeoutMillis, long pollMillis) {
@@ -286,18 +286,17 @@ abstract class ClusterControllerBase {
         persistRuntimeState(server);
     }
 
-    protected static void disconnectPlayersFromHostServer(MinecraftServer hostServer,
-            @NonNull Component disconnectReason) {
+    protected static void disconnectPlayersFromHostServer(MinecraftServer hostServer, String messageKey) {
         if (hostServer == null || hostServer.isStopped()) {
             return;
         }
 
         for (ServerPlayer player : List.copyOf(hostServer.getPlayerList().getPlayers())) {
-            player.connection.disconnect(disconnectReason);
+            player.connection.disconnect(ClusterMessages.component(player, messageKey));
         }
     }
 
-    protected void disconnectPlayersFromRunningNodes(@NonNull Component disconnectReason) {
+    protected void disconnectPlayersFromRunningNodes(String messageKey) {
         for (MinecraftServer runtimeServer : runtimeServerInstances.values()) {
             if (runtimeServer.isStopped()) {
                 continue;
@@ -305,7 +304,7 @@ abstract class ClusterControllerBase {
 
             runtimeServer.execute(() -> {
                 for (ServerPlayer player : List.copyOf(runtimeServer.getPlayerList().getPlayers())) {
-                    player.connection.disconnect(disconnectReason);
+                    player.connection.disconnect(ClusterMessages.component(player, messageKey));
                 }
             });
         }

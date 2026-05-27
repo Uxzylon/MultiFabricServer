@@ -1,6 +1,7 @@
 package fr.jeanney;
 
 import fr.jeanney.cluster.IntegratedClusterController;
+import fr.jeanney.cluster.ClusterMessages;
 import fr.jeanney.cluster.command.ClusterCommand;
 import fr.jeanney.cluster.network.ClusterRegisterPayload;
 import fr.jeanney.cluster.network.ProxyConnectPayload;
@@ -16,6 +17,7 @@ import org.slf4j.LoggerFactory;
 
 public final class MultiFabricServer implements ModInitializer {
 
+        public static final String MOD_ID = "multifabricserver";
         public static final Logger LOGGER = LoggerFactory.getLogger(MultiFabricServer.class);
 
         private static final IntegratedClusterController CLUSTER_CONTROLLER = new IntegratedClusterController();
@@ -26,6 +28,7 @@ public final class MultiFabricServer implements ModInitializer {
 
         @Override
         public void onInitialize() {
+                ClusterMessages.initialize();
                 registerPayloads();
                 registerEvents();
 

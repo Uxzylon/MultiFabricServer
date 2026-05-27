@@ -546,6 +546,33 @@ public final class ClusterRuntimeGameTests {
     }
 
     @GameTest(maxTicks = 100)
+    public void localizedMessagesUsePlayerLanguageAndEnglishFallback(GameTestHelper helper) {
+        String french = ClusterMessages.component("fr_fr", "cluster.host_return.unavailable",
+                ClusterMessages.arg("cluster", "testnode")).getString();
+        if (!french.contains("testnode") || !french.contains("pas disponible")) {
+            helper.fail("French host-return message was not selected: " + french);
+            return;
+        }
+
+        String fallback = ClusterMessages.component("zz_zz", "cluster.host_return.unavailable",
+                ClusterMessages.arg("cluster", "testnode")).getString();
+        if (!"Cluster 'testnode' is unavailable. You were sent back to host.".equals(fallback)) {
+            helper.fail("Missing locale should fall back to English, got: " + fallback);
+            return;
+        }
+
+        String chat = ClusterMessages.component("en_us", "chat.cross_cluster.line",
+                ClusterMessages.arg("player", "Player"),
+                ClusterMessages.arg("message", "&cnot-colored")).getString();
+        if (!"<Player> &cnot-colored".equals(chat)) {
+            helper.fail("Message arguments should not be parsed as formatting codes, got: " + chat);
+            return;
+        }
+
+        helper.succeed();
+    }
+
+    @GameTest(maxTicks = 100)
     public void remoteTabDisplayNameIncludesClusterAndGrayStyle(GameTestHelper helper) {
         Component displayName = IntegratedClusterController.buildRemoteTabDisplayName("Uxzylon", "creative");
 

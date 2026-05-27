@@ -64,7 +64,9 @@ abstract class ClusterControllerTabs extends ClusterControllerMarkers {
     public static Component buildRemoteTabDisplayName(String playerName, String clusterLabel) {
         String effectiveName = (playerName == null || playerName.isBlank()) ? "unknown" : playerName;
         String effectiveCluster = clusterLabelForNodeId(clusterLabel);
-        return Component.literal(effectiveName + " (" + effectiveCluster + ")").withStyle(ChatFormatting.GRAY);
+        return ClusterMessages.component(ClusterMessages.FALLBACK_LOCALE, "tab.remote_player",
+                ClusterMessages.arg("player", effectiveName),
+                ClusterMessages.arg("cluster", effectiveCluster)).withStyle(ChatFormatting.GRAY);
     }
 
     protected synchronized void refreshSharedTabLists() {
