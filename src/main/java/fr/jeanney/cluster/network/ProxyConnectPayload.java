@@ -59,7 +59,7 @@ public record ProxyConnectPayload(String targetServerName) implements CustomPack
 
             String target = input.readUTF();
             if (target.isBlank()) {
-                throw new IllegalArgumentException("Proxy target server cannot be blank");
+                throw new IllegalArgumentException("Target proxy server name cannot be blank");
             }
             return target;
         } catch (IOException ioException) {

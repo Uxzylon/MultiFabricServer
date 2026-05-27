@@ -6,6 +6,7 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import fr.jeanney.MultiFabricServer;
+import fr.jeanney.cluster.ClusterMessages;
 import fr.jeanney.cluster.ClusterNodeRuntime;
 import fr.jeanney.cluster.ClusterNodeState;
 import fr.jeanney.cluster.ClusterPlayerPresence;
@@ -15,19 +16,19 @@ import java.util.Comparator;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Stream;
-import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
-import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.permissions.Permission;
 import net.minecraft.server.permissions.PermissionLevel;
+import org.jspecify.annotations.NonNull;
 
 public final class ClusterCommand {
 
-    private static final Permission NODE_ADMIN_PERMISSION = new Permission.HasCommandLevel(PermissionLevel.GAMEMASTERS);
+    private static final @NonNull Permission NODE_ADMIN_PERMISSION = new Permission.HasCommandLevel(
+            PermissionLevel.GAMEMASTERS);
 
     private ClusterCommand() {
     }
@@ -53,19 +54,20 @@ public final class ClusterCommand {
                                     .toList();
 
                             if (sharedPlayers.isEmpty()) {
-                                source.sendSuccess(() -> Component.literal("No players online across the cluster."),
+                                source.sendSuccess(() -> ClusterMessages.component(source, "command.players.none"),
                                         false);
                                 return 1;
                             }
 
                             source.sendSuccess(
-                                    () -> Component.literal("Players online across cluster (" + sharedPlayers.size()
-                                            + "):"),
+                                    () -> ClusterMessages.component(source, "command.players.header",
+                                            ClusterMessages.arg("count", sharedPlayers.size())),
                                     false);
                             for (ClusterPlayerPresence player : sharedPlayers) {
                                 source.sendSuccess(
-                                        () -> Component.literal("- " + player.playerName() + " @ "
-                                                + player.clusterLabel()),
+                                        () -> ClusterMessages.component(source, "command.players.entry",
+                                                ClusterMessages.arg("player", player.playerName()),
+                                                ClusterMessages.arg("cluster", player.clusterLabel())),
                                         false);
                             }
                             return 1;
@@ -73,9 +75,11 @@ public final class ClusterCommand {
                 .then(Commands.literal("reload")
                         .requires(ClusterCommand::hasNodeAdminPermission)
                         .executes(context -> {
+                            ClusterMessages.reload();
                             int count = controller.reloadFromDisk(context.getSource().getServer());
                             context.getSource().sendSuccess(
-                                    () -> Component.literal("Cluster config reloaded. Nodes registered: " + count),
+                                    () -> ClusterMessages.component(context.getSource(), "command.reload",
+                                            ClusterMessages.arg("count", count)),
                                     true);
                             return 1;
                         }))
@@ -95,18 +99,25 @@ public final class ClusterCommand {
                                     boolean started = controller.startNode(context.getSource().getServer(), node);
                                     if (!started) {
                                         if (!controller.hasNode(node)) {
-                                            context.getSource().sendFailure(Component.literal("Unknown node: " + node));
+                                            sendUnknownNode(context.getSource(), node);
                                         } else if (!controller.isNodeEnabled(node)) {
-                                            context.getSource().sendFailure(Component.literal("Node is disabled: "
-                                                    + node + " (use /cluster enable " + node + ")"));
+                                            context.getSource().sendFailure(ClusterMessages.component(
+                                                    context.getSource(),
+                                                    "command.node.disabled_with_hint",
+                                                    ClusterMessages.arg("node", node)));
                                         } else {
-                                            context.getSource()
-                                                    .sendFailure(Component.literal("Failed to start node: " + node));
+                                            context.getSource().sendFailure(ClusterMessages.component(
+                                                    context.getSource(),
+                                                    "command.node.start_failed",
+                                                    ClusterMessages.arg("node", node)));
                                         }
                                         return 0;
                                     }
                                     context.getSource().sendSuccess(
-                                            () -> Component.literal("Start requested for node: " + node), true);
+                                            () -> ClusterMessages.component(context.getSource(),
+                                                    "command.node.start_requested",
+                                                    ClusterMessages.arg("node", node)),
+                                            true);
                                     return 1;
                                 })))
                 .then(Commands.literal("enable")
@@ -118,12 +129,13 @@ public final class ClusterCommand {
                                     boolean changed = controller.setNodeEnabled(context.getSource().getServer(), node,
                                             true);
                                     if (!changed) {
-                                        context.getSource().sendFailure(Component.literal("Unknown node: " + node));
+                                        sendUnknownNode(context.getSource(), node);
                                         return 0;
                                     }
 
                                     context.getSource().sendSuccess(
-                                            () -> Component.literal("Enabled node: " + node),
+                                            () -> ClusterMessages.component(context.getSource(), "command.node.enabled",
+                                                    ClusterMessages.arg("node", node)),
                                             true);
                                     return 1;
                                 })))
@@ -136,10 +148,13 @@ public final class ClusterCommand {
                                     boolean changed = controller.setNodeEnabled(context.getSource().getServer(), node,
                                             false);
                                     if (!changed) {
-                                        context.getSource().sendFailure(Component.literal("Unknown node: " + node));
+                                        sendUnknownNode(context.getSource(), node);
                                         return 0;
                                     }
-                                    context.getSource().sendSuccess(() -> Component.literal("Disabled node: " + node),
+                                    context.getSource().sendSuccess(
+                                            () -> ClusterMessages.component(context.getSource(),
+                                                    "command.node.disabled",
+                                                    ClusterMessages.arg("node", node)),
                                             true);
                                     return 1;
                                 })))
@@ -151,10 +166,13 @@ public final class ClusterCommand {
                                     String node = StringArgumentType.getString(context, "node");
                                     boolean removed = controller.removeNode(context.getSource().getServer(), node);
                                     if (!removed) {
-                                        context.getSource().sendFailure(Component.literal("Unknown node: " + node));
+                                        sendUnknownNode(context.getSource(), node);
                                         return 0;
                                     }
-                                    context.getSource().sendSuccess(() -> Component.literal("Removed node: " + node),
+                                    context.getSource().sendSuccess(
+                                            () -> ClusterMessages.component(context.getSource(),
+                                                    "command.node.removed",
+                                                    ClusterMessages.arg("node", node)),
                                             true);
                                     return 1;
                                 })))
@@ -173,11 +191,14 @@ public final class ClusterCommand {
                                     String node = StringArgumentType.getString(context, "node");
                                     boolean stopped = controller.stopNode(node);
                                     if (!stopped) {
-                                        context.getSource().sendFailure(Component.literal("Unknown node: " + node));
+                                        sendUnknownNode(context.getSource(), node);
                                         return 0;
                                     }
                                     context.getSource().sendSuccess(
-                                            () -> Component.literal("Stop requested for node: " + node), true);
+                                            () -> ClusterMessages.component(context.getSource(),
+                                                    "command.node.stop_requested",
+                                                    ClusterMessages.arg("node", node)),
+                                            true);
                                     return 1;
                                 }))));
     }
@@ -186,8 +207,7 @@ public final class ClusterCommand {
         return hasPermission(source, NODE_ADMIN_PERMISSION);
     }
 
-    @SuppressWarnings("null")
-    private static boolean hasPermission(CommandSourceStack source, Permission permission) {
+    private static boolean hasPermission(CommandSourceStack source, @NonNull Permission permission) {
         return source.permissions().hasPermission(permission);
     }
 
@@ -195,26 +215,26 @@ public final class ClusterCommand {
         return StringArgumentType.word();
     }
 
-    @SuppressWarnings("null")
     private static int addNode(CommandSourceStack source, IntegratedClusterController controller, String node) {
         if (!IntegratedClusterController.isValidNodeName(node)) {
-            source.sendFailure(Component.literal(
-                    "Invalid cluster name. Use 1-64 characters: letters, numbers, dot, dash, underscore."));
+            source.sendFailure(ClusterMessages.component(source, "command.cluster.invalid_name"));
             return 0;
         }
         if (controller.hasNode(node)) {
-            source.sendFailure(Component.literal("Cluster already exists: " + node));
+            source.sendFailure(ClusterMessages.component(source, "command.cluster.exists",
+                    ClusterMessages.arg("node", node)));
             return 0;
         }
 
         boolean added = controller.addNode(source.getServer(), node);
         if (!added) {
-            source.sendFailure(Component.literal("Failed to add cluster: " + node));
+            source.sendFailure(ClusterMessages.component(source, "command.cluster.add_failed",
+                    ClusterMessages.arg("node", node)));
             return 0;
         }
 
-        source.sendSuccess(() -> Component.literal("Added cluster ")
-                .append(Component.literal(node).withStyle(ChatFormatting.AQUA)), true);
+        source.sendSuccess(() -> ClusterMessages.component(source, "command.cluster.added",
+                ClusterMessages.arg("node", node)), true);
         return 1;
     }
 
@@ -240,20 +260,17 @@ public final class ClusterCommand {
 
     private static void showStatus(CommandSourceStack source, IntegratedClusterController controller) {
         int totalPlayers = controller.sharedOnlinePlayersCount();
-        source.sendSuccess(() -> Component.literal("Cluster status")
-                .withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD)
-                .append(Component.literal("  " + totalPlayers + " online")
-                        .withStyle(ChatFormatting.GRAY)),
+        source.sendSuccess(() -> ClusterMessages.component(source, "command.status.header",
+                ClusterMessages.arg("players", totalPlayers)),
                 false);
 
-        source.sendSuccess(() -> statusLine("host", true, true, countPlayers(controller, null)), false);
+        source.sendSuccess(() -> statusLine(source, "host", true, true, countPlayers(controller, null)), false);
 
         var nodes = controller.allNodes().stream()
                 .sorted(Comparator.comparing(runtime -> runtime.definition().id(), String.CASE_INSENSITIVE_ORDER))
                 .toList();
         if (nodes.isEmpty()) {
-            source.sendSuccess(() -> Component.literal("No clusters configured")
-                    .withStyle(ChatFormatting.GRAY), false);
+            source.sendSuccess(() -> ClusterMessages.component(source, "command.status.none"), false);
             return;
         }
 
@@ -261,6 +278,7 @@ public final class ClusterCommand {
             String nodeId = runtime.definition().id();
             source.sendSuccess(
                     () -> statusLine(
+                            source,
                             nodeId,
                             runtime.definition().enabled(),
                             runtime.state() == ClusterNodeState.RUNNING,
@@ -275,31 +293,24 @@ public final class ClusterCommand {
                 .count();
     }
 
-    @SuppressWarnings("null")
-    private static Component statusLine(String name, boolean enabled, boolean running, int players) {
-        return Component.literal(" - ").withStyle(ChatFormatting.DARK_GRAY)
-                .append(Component.literal(name).withStyle("host".equals(name)
-                        ? ChatFormatting.GOLD
-                        : ChatFormatting.AQUA))
-                .append(Component.literal("  "))
-                .append(flag(enabled, "enabled", "disabled"))
-                .append(Component.literal("  "))
-                .append(flag(running, "running", "stopped"))
-                .append(Component.literal("  "))
-                .append(Component.literal(players + " " + (players == 1 ? "player" : "players"))
-                        .withStyle(ChatFormatting.GRAY));
-    }
-
-    @SuppressWarnings("null")
-    private static MutableComponent flag(boolean value, String trueText, String falseText) {
-        return Component.literal(value ? trueText : falseText)
-                .withStyle(value ? ChatFormatting.GREEN : ChatFormatting.RED);
+    private static Component statusLine(
+            CommandSourceStack source, String name, boolean enabled, boolean running, int players) {
+        String locale = ClusterMessages.locale(source);
+        return ClusterMessages.component(source, "command.status.line",
+                ClusterMessages.formattedArg("name", ("host".equals(name) ? "&6" : "&b") + name + "&r"),
+                ClusterMessages.formattedArg("enabled", ClusterMessages.raw(locale,
+                        enabled ? "command.status.enabled" : "command.status.disabled")),
+                ClusterMessages.formattedArg("running", ClusterMessages.raw(locale,
+                        running ? "command.status.running" : "command.status.stopped")),
+                ClusterMessages.arg("players", players),
+                ClusterMessages.arg("player_word", ClusterMessages.raw(locale,
+                        players == 1 ? "command.status.player_singular" : "command.status.player_plural")));
     }
 
     private static int transferToTarget(CommandSourceStack source, IntegratedClusterController controller,
             String target) {
         if (!(source.getEntity() instanceof ServerPlayer player)) {
-            source.sendFailure(Component.literal("This command must be run by a player"));
+            source.sendFailure(ClusterMessages.component(source, "command.source.player_only"));
             return 0;
         }
         String playerName = player.getScoreboardName();
@@ -315,10 +326,12 @@ public final class ClusterCommand {
         } else {
             ClusterNodeRuntime runtime = controller.node(target).orElse(null);
             if (runtime == null) {
-                return failTravel(source, playerName, target, "Unknown target: " + target);
+                return failTravel(source, playerName, target, "command.travel.unknown_target",
+                        ClusterMessages.arg("target", target));
             }
             if (!runtime.definition().enabled()) {
-                return failTravel(source, playerName, target, "Target node is disabled: " + target);
+                return failTravel(source, playerName, target, "command.travel.target_disabled",
+                        ClusterMessages.arg("target", target));
             }
             if (useSeamlessProxySwitch) {
                 return requestSeamlessSwitch(source, controller, player, playerName, target, target);
@@ -328,7 +341,8 @@ public final class ClusterCommand {
                 ClusterNodeRuntime refreshedRuntime = controller.node(target).orElse(runtime);
                 if (started && refreshedRuntime.state() == ClusterNodeState.STARTING
                         && controller.requestDirectClusterTravelWhenReady(source.getServer(), player, target)) {
-                    source.sendSuccess(() -> Component.literal("Cluster is starting; transfer requested: " + target),
+                    source.sendSuccess(() -> ClusterMessages.component(source, "command.travel.starting",
+                            ClusterMessages.arg("target", target)),
                             false);
                     return 1;
                 }
@@ -340,7 +354,9 @@ public final class ClusterCommand {
                             source,
                             playerName,
                             target,
-                            "Target node failed to start: " + target + " (" + reason + ")");
+                            "command.travel.target_failed",
+                            ClusterMessages.arg("target", target),
+                            ClusterMessages.arg("reason", reason));
                 }
                 runtime = refreshedRuntime;
             }
@@ -352,7 +368,8 @@ public final class ClusterCommand {
                         source,
                         playerName,
                         target,
-                        "Target node has no resolved transfer port yet: " + target);
+                        "command.travel.no_transfer_port",
+                        ClusterMessages.arg("target", target));
             }
             targetNodeId = target;
         }
@@ -365,7 +382,7 @@ public final class ClusterCommand {
         try {
             int result = source.getServer().getCommands().getDispatcher().execute(transferCommand, source);
             if (result <= 0) {
-                return failTravel(source, playerName, target, "Transfer command did not execute");
+                return failTravel(source, playerName, target, "command.travel.transfer_not_executed");
             }
 
             if (targetNodeId == null) {
@@ -376,7 +393,8 @@ public final class ClusterCommand {
 
             return result;
         } catch (Exception exception) {
-            return failTravel(source, playerName, target, "Transfer failed: " + exception.getMessage());
+            return failTravel(source, playerName, target, "command.travel.transfer_failed",
+                    ClusterMessages.arg("reason", exception.getMessage()));
         }
     }
 
@@ -392,20 +410,30 @@ public final class ClusterCommand {
                 target);
         boolean switched = controller.requestSeamlessProxyTravel(source.getServer(), player, targetNodeId);
         if (!switched) {
-            return failTravel(source, playerName, target, "Seamless proxy switch failed for target: " + target);
+            return failTravel(source, playerName, target, "command.travel.seamless_failed",
+                    ClusterMessages.arg("target", target));
         }
-        source.sendSuccess(() -> Component.literal("Seamless switch requested: " + target), false);
+        source.sendSuccess(() -> ClusterMessages.component(source, "command.travel.seamless_requested",
+                ClusterMessages.arg("target", target)), false);
         return 1;
     }
 
-    @SuppressWarnings("null")
-    private static int failTravel(CommandSourceStack source, String playerName, String target, String message) {
-        source.sendFailure(Component.literal(message));
+    private static int failTravel(CommandSourceStack source,
+            String playerName,
+            String target,
+            String messageKey,
+            ClusterMessages.Arg... args) {
+        source.sendFailure(ClusterMessages.component(source, messageKey, args));
         MultiFabricServer.LOGGER.warn(
-                "Cluster travel failed for player '{}' to target '{}': {}",
+                "Cluster travel failed for player '{}' to target '{}' (messageKey={})",
                 playerName,
                 target,
-                message);
+                messageKey);
         return 0;
+    }
+
+    private static void sendUnknownNode(CommandSourceStack source, String node) {
+        source.sendFailure(ClusterMessages.component(source, "command.node.unknown",
+                ClusterMessages.arg("node", node)));
     }
 }

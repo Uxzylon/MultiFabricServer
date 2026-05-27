@@ -145,7 +145,9 @@ public abstract class DynmapCompatMixins {
         if (!addedWorlds.isEmpty()) {
             invokeNoArgument(core, "updateConfigHashcode");
             MultiFabricServer.LOGGER.info(
-                    "Added {} Dynmap cluster world(s): {}", addedWorlds.size(), String.join(", ", addedWorlds));
+                    "Added {} Dynmap cluster world(s): {}",
+                    addedWorlds.size(),
+                    String.join(", ", addedWorlds));
         }
     }
 
@@ -240,7 +242,9 @@ public abstract class DynmapCompatMixins {
             Object core = readField(plugin, "core");
             invokeNoArgument(core, "updateConfigHashcode");
             MultiFabricServer.LOGGER.info(
-                    "Removed {} Dynmap cluster world(s): {}", removedWorlds.size(), String.join(", ", removedWorlds));
+                    "Removed {} Dynmap cluster world(s): {}",
+                    removedWorlds.size(),
+                    String.join(", ", removedWorlds));
         }
     }
 

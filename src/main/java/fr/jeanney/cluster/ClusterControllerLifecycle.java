@@ -16,9 +16,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.jspecify.annotations.NonNull;
 
-import net.minecraft.ChatFormatting;
 import net.minecraft.gametest.framework.GameTestServer;
-import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -34,8 +32,12 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
         }
 
         synchronized (this) {
-            MultiFabricServer.LOGGER.debug("onServerStarted server={} owner={} stopping={} thread={}",
-                    describeServer(server), describeServer(ownerServer), stopping, Thread.currentThread().getName());
+            MultiFabricServer.LOGGER.debug(
+                    "onServerStarted server={} owner={} stopping={} thread={}",
+                    describeServer(server),
+                    describeServer(ownerServer),
+                    stopping,
+                    Thread.currentThread().getName());
 
             if (ownerServer == null) {
                 ownerServer = server;
@@ -111,7 +113,9 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
                 continue;
             }
 
-            MultiFabricServer.LOGGER.info("Node '{}' has been empty for {}s, stopping", nodeId,
+            MultiFabricServer.LOGGER.info(
+                    "Node '{}' has been empty for {}s, stopping",
+                    nodeId,
                     TimeUnit.MILLISECONDS.toSeconds(nodeIdleStopMillis));
             scheduleRuntimeStop(nodeId, runtime, 0L);
             activeNodeIds.remove(nodeId);
@@ -134,9 +138,13 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
         }
 
         synchronized (this) {
-            MultiFabricServer.LOGGER.debug("onServerStopping server={} owner={} initialized={} nodes={} stopping={} "
-                    + "thread={}",
-                    describeServer(server), describeServer(ownerServer), initialized, runtimes.size(), stopping,
+            MultiFabricServer.LOGGER.debug(
+                    "onServerStopping server={} owner={} initialized={} nodes={} stopping={} thread={}",
+                    describeServer(server),
+                    describeServer(ownerServer),
+                    initialized,
+                    runtimes.size(),
+                    stopping,
                     Thread.currentThread().getName());
 
             if (server != ownerServer) {
@@ -147,13 +155,12 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
             stopping = true;
 
             if (!initialized) {
-                MultiFabricServer.LOGGER.debug(
-                        "Controller not initialized on host stop; waiting for onServerStopped");
+                MultiFabricServer.LOGGER.debug("Controller not initialized on host stop; waiting for onServerStopped");
                 return;
             }
 
-            disconnectPlayersFromHostServer(server, Component.literal("Server is shutting down"));
-            disconnectPlayersFromRunningNodes(Component.literal("Server is shutting down"));
+            disconnectPlayersFromHostServer(server, "disconnect.server_shutdown");
+            disconnectPlayersFromRunningNodes("disconnect.server_shutdown");
             activeNodeIds.clear();
             activeNodeIds.addAll(currentlyRunningNodeIds());
             sharedPlayerPresences.entrySet().removeIf(entry -> {
@@ -180,9 +187,13 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
         }
 
         synchronized (this) {
-            MultiFabricServer.LOGGER.debug("onServerStopped server={} owner={} initialized={} nodes={} stopping={} "
-                    + "thread={}",
-                    describeServer(server), describeServer(ownerServer), initialized, runtimes.size(), stopping,
+            MultiFabricServer.LOGGER.debug(
+                    "onServerStopped server={} owner={} initialized={} nodes={} stopping={} thread={}",
+                    describeServer(server),
+                    describeServer(ownerServer),
+                    initialized,
+                    runtimes.size(),
+                    stopping,
                     Thread.currentThread().getName());
 
             if (server != ownerServer) {
@@ -218,8 +229,11 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
     }
 
     protected synchronized int reloadFromDiskInternal(MinecraftServer server) {
-        MultiFabricServer.LOGGER.debug("reloadFromDisk server={} initialized={} nodesBefore={}",
-                describeServer(server), initialized, runtimes.size());
+        MultiFabricServer.LOGGER.debug(
+                "reloadFromDisk server={} initialized={} nodesBefore={}",
+                describeServer(server),
+                initialized,
+                runtimes.size());
 
         if (initialized) {
             Set<String> delayedStops = new LinkedHashSet<>(stoppingNodeIds);
@@ -272,8 +286,8 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
 
         initialized = true;
 
-        MultiFabricServer.LOGGER.info(
-                "Integrated cluster config reloaded. nodes={} (lazy startup mode)", runtimes.size());
+        MultiFabricServer.LOGGER.info("Integrated cluster config reloaded. nodes={} (lazy startup mode)",
+                runtimes.size());
 
         persistRuntimeState(server);
         refreshSharedTabLists();
@@ -453,13 +467,12 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
         scheduleDeferredSharedTabRefresh(server);
 
         if (!suppressJoinMessage) {
-            broadcastSharedLifecycleMessage(
-                    Component.literal(playerName + " joined the game").withStyle(ChatFormatting.YELLOW));
+            broadcastSharedLifecycleMessage("lifecycle.join", ClusterMessages.arg("player", playerName));
         }
 
         if (hostRouteMessageNodeId != null && !hostRouteMessageNodeId.isBlank()) {
-            player.sendSystemMessage(Component.literal("Cluster '" + hostRouteMessageNodeId
-                    + "' is unavailable. You were sent back to host.").withStyle(ChatFormatting.YELLOW));
+            player.sendSystemMessage(ClusterMessages.component(player, "cluster.host_return.unavailable",
+                    ClusterMessages.arg("cluster", hostRouteMessageNodeId)));
         }
 
         if (nodeIdForServer != null) {
@@ -484,12 +497,15 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
         }
 
         if (shouldUseProxySwitch(server)) {
-            MultiFabricServer.LOGGER.info("Restoring player {} to cluster {} through proxy switch because "
-                    + "FabricProxy-Lite is configured",
-                    playerName, targetNodeId);
+            MultiFabricServer.LOGGER.info(
+                    "Restoring player {} to cluster {} through proxy switch because FabricProxy-Lite is configured",
+                    playerName,
+                    targetNodeId);
             if (!requestSeamlessProxyTravel(server, player, targetNodeId)) {
                 MultiFabricServer.LOGGER.warn(
-                        "Seamless proxy restore failed for player {} to node {}", playerName, targetNodeId);
+                        "Seamless proxy restore failed for player {} to node {}",
+                        playerName,
+                        targetNodeId);
             }
             return;
         }
@@ -504,9 +520,10 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
         }
 
         if (runtime.state() != ClusterNodeState.RUNNING) {
-            MultiFabricServer.LOGGER.warn("Failed to restore player {} to cluster "
-                    + "{} because the node is not running",
-                    playerName, targetNodeId);
+            MultiFabricServer.LOGGER.warn(
+                    "Failed to restore player {} to cluster {} because the node is not running",
+                    playerName,
+                    targetNodeId);
             return;
         }
 
@@ -530,8 +547,8 @@ abstract class ClusterControllerLifecycle extends ClusterControllerTravel {
         scheduleDeferredSharedTabRefresh(server);
 
         if (!suppressDisconnectMessage) {
-            broadcastSharedLifecycleMessage(
-                    Component.literal(player.getScoreboardName() + " left the game").withStyle(ChatFormatting.YELLOW));
+            broadcastSharedLifecycleMessage("lifecycle.leave",
+                    ClusterMessages.arg("player", player.getScoreboardName()));
         }
     }
 

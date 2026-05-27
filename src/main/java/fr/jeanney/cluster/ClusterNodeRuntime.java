@@ -9,7 +9,6 @@ import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.Nullable;
 
 import java.util.Objects;
-import java.util.Optional;
 
 import net.minecraft.server.MinecraftServer;
 
@@ -84,18 +83,12 @@ public final class ClusterNodeRuntime {
     }
 
     private void startInBackground(MinecraftServer hostServer, @NonNull Path nodeRoot, long generation) {
-        @Nullable
         EmbeddedServerHandle startedHandle = null;
 
         try {
             Files.createDirectories(nodeRoot);
 
-            Optional<@NonNull EmbeddedServerHandle> maybeStartedHandle = EmbeddedServerFactory
-                    .tryStartEmbeddedServer(hostServer, definition, nodeRoot);
-
-            if (maybeStartedHandle.isPresent()) {
-                startedHandle = maybeStartedHandle.get();
-            }
+            startedHandle = EmbeddedServerFactory.tryStartEmbeddedServer(hostServer, definition, nodeRoot);
 
             synchronized (this) {
                 if (generation != lifecycleGeneration || state != ClusterNodeState.STARTING) {
@@ -164,11 +157,10 @@ public final class ClusterNodeRuntime {
 
     public synchronized void stop() {
         MultiFabricServer.LOGGER.debug(
-                "Node stop requested node={} state={} hasHandle={} thread={}",
+                "Stopping node '{}' handle={} state={}",
                 definition.id(),
-                state,
                 handle != null,
-                Thread.currentThread().getName());
+                state);
 
         lifecycleGeneration++;
         if (handle != null) {
@@ -186,11 +178,7 @@ public final class ClusterNodeRuntime {
             failureReason = "";
         }
 
-        MultiFabricServer.LOGGER.debug(
-                "Node stop completed node={} state={} failureReason={}",
-                definition.id(),
-                state,
-                failureReason);
+        MultiFabricServer.LOGGER.debug("Node '{}' stopped", definition.id());
     }
 
     private static void closeStaleHandle(@Nullable EmbeddedServerHandle staleHandle) {

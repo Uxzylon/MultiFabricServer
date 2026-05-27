@@ -15,8 +15,6 @@ import java.util.concurrent.TimeUnit;
 
 import org.jspecify.annotations.NonNull;
 
-import net.minecraft.ChatFormatting;
-import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
@@ -244,11 +242,14 @@ abstract class ClusterControllerTravel extends ClusterControllerMessaging {
                 }
 
                 if (readyTarget == null) {
-                    currentPlayer.sendSystemMessage(Component.literal(
-                            "Cluster '" + targetNodeId + "' is still starting. Please retry in a moment."));
-                    MultiFabricServer.LOGGER.warn("Timed out waiting for node {} "
-                            + "before direct transfer for player {}",
-                            targetNodeId, currentPlayer.getScoreboardName());
+                    currentPlayer.sendSystemMessage(ClusterMessages.component(
+                            currentPlayer,
+                            "cluster.starting.retry",
+                            ClusterMessages.arg("cluster", targetNodeId)));
+                    MultiFabricServer.LOGGER.warn(
+                            "Timed out waiting for node {} before direct transfer for player {}",
+                            targetNodeId,
+                            currentPlayer.getScoreboardName());
                     return;
                 }
 
@@ -280,11 +281,14 @@ abstract class ClusterControllerTravel extends ClusterControllerMessaging {
                 }
 
                 if (readyTarget == null) {
-                    currentPlayer.sendSystemMessage(Component.literal(
-                            "Cluster '" + targetNodeId + "' is still starting. Please retry in a moment."));
-                    MultiFabricServer.LOGGER.warn("Timed out waiting for node {} to become reachable before "
-                            + "seamless switch for player {}",
-                            targetNodeId, currentPlayer.getScoreboardName());
+                    currentPlayer.sendSystemMessage(ClusterMessages.component(
+                            currentPlayer,
+                            "cluster.starting.retry",
+                            ClusterMessages.arg("cluster", targetNodeId)));
+                    MultiFabricServer.LOGGER.warn(
+                            "Timed out waiting for node {} to become reachable before seamless switch for player {}",
+                            targetNodeId,
+                            currentPlayer.getScoreboardName());
                     return;
                 }
 
@@ -294,9 +298,10 @@ abstract class ClusterControllerTravel extends ClusterControllerMessaging {
                 }
 
                 if (!executeSeamlessProxyTravel(server, currentPlayer, targetNodeId, proxyServerName, false)) {
-                    MultiFabricServer.LOGGER.warn("Seamless switch failed after node became reachable for player "
-                            + "{} to node {}",
-                            currentPlayer.getScoreboardName(), targetNodeId);
+                    MultiFabricServer.LOGGER.warn(
+                            "Seamless switch failed after node became reachable for player {} to node {}",
+                            currentPlayer.getScoreboardName(),
+                            targetNodeId);
                 }
             });
         });
@@ -357,18 +362,24 @@ abstract class ClusterControllerTravel extends ClusterControllerMessaging {
                 }
 
                 if (!reachable) {
-                    currentPlayer.sendSystemMessage(Component.literal(
-                            "Cluster '" + targetNodeId + "' is still starting. Please retry in a moment."));
-                    MultiFabricServer.LOGGER.warn("Timed out waiting for node {} endpoint {}:{} before seamless "
-                            + "switch for player {}",
-                            targetNodeId, targetHost, targetPort, currentPlayer.getScoreboardName());
+                    currentPlayer.sendSystemMessage(ClusterMessages.component(
+                            currentPlayer,
+                            "cluster.starting.retry",
+                            ClusterMessages.arg("cluster", targetNodeId)));
+                    MultiFabricServer.LOGGER.warn(
+                            "Timed out waiting for node {} endpoint {}:{} before seamless switch for player {}",
+                            targetNodeId,
+                            targetHost,
+                            targetPort,
+                            currentPlayer.getScoreboardName());
                     return;
                 }
 
                 if (!executeSeamlessProxyTravel(server, currentPlayer, targetNodeId, proxyServerName, false)) {
-                    MultiFabricServer.LOGGER.warn("Seamless switch failed after endpoint became reachable for "
-                            + "player {} to node {}",
-                            currentPlayer.getScoreboardName(), targetNodeId);
+                    MultiFabricServer.LOGGER.warn(
+                            "Seamless switch failed after endpoint became reachable for player {} to node {}",
+                            currentPlayer.getScoreboardName(),
+                            targetNodeId);
                 }
             });
         });
@@ -406,8 +417,12 @@ abstract class ClusterControllerTravel extends ClusterControllerMessaging {
             return true;
         } catch (Exception exception) {
             clearPendingInternalTravelMarker(player.getUUID().toString());
-            MultiFabricServer.LOGGER.error("Failed seamless proxy switch for player {} to {} (node={})",
-                    player.getScoreboardName(), effectiveProxyServerName, targetNodeId, exception);
+            MultiFabricServer.LOGGER.error(
+                    "Failed seamless proxy switch for player {} to {} (node={})",
+                    player.getScoreboardName(),
+                    effectiveProxyServerName,
+                    targetNodeId,
+                    exception);
             return false;
         }
     }
@@ -444,8 +459,12 @@ abstract class ClusterControllerTravel extends ClusterControllerMessaging {
             }
         } catch (Exception exception) {
             clearPendingInternalTravelMarker(player.getUUID().toString());
-            MultiFabricServer.LOGGER.error("Failed to send proxy switch for player {} to {} (node={})",
-                    player.getScoreboardName(), proxyServerName, targetNodeId, exception);
+            MultiFabricServer.LOGGER.error(
+                    "Failed to send proxy switch for player {} to {} (node={})",
+                    player.getScoreboardName(),
+                    proxyServerName,
+                    targetNodeId,
+                    exception);
         }
     }
 
@@ -459,15 +478,23 @@ abstract class ClusterControllerTravel extends ClusterControllerMessaging {
                     player.createCommandSourceStack());
             if (result <= 0) {
                 clearPendingInternalTravelMarker(playerUuid);
-                MultiFabricServer.LOGGER.warn("Transfer command did not execute for player {} to {}:{}",
-                        player.getScoreboardName(), host, port);
+                MultiFabricServer.LOGGER.warn(
+                        "Transfer command did not execute for player {} to {}:{}",
+                        player.getScoreboardName(),
+                        host,
+                        port);
             } else {
                 rememberPlayerCluster(server, player, targetNodeId);
             }
         } catch (Exception exception) {
             clearPendingInternalTravelMarker(playerUuid);
-            MultiFabricServer.LOGGER.error("Failed to transfer player {} to cluster {} via {}:{}",
-                    player.getScoreboardName(), targetNodeId, host, port, exception);
+            MultiFabricServer.LOGGER.error(
+                    "Failed to transfer player {} to cluster {} via {}:{}",
+                    player.getScoreboardName(),
+                    targetNodeId,
+                    host,
+                    port,
+                    exception);
         }
     }
 
@@ -563,14 +590,15 @@ abstract class ClusterControllerTravel extends ClusterControllerMessaging {
         Path runtimeRoot = clusterRuntimeRoot == null ? target.getParent() : clusterRuntimeRoot;
         if (runtimeRoot == null) {
             MultiFabricServer.LOGGER.warn(
-                    "Refusing to delete cluster runtime directory without known root: {}", target);
+                    "Refusing to delete cluster runtime directory without known root: {}",
+                    target);
             return;
         }
 
         Path root = runtimeRoot.toAbsolutePath().normalize();
         if (!target.startsWith(root) || target.equals(root)) {
-            MultiFabricServer.LOGGER.warn("Refusing to delete cluster runtime "
-                    + "directory outside cluster root: {}",
+            MultiFabricServer.LOGGER.warn(
+                    "Refusing to delete cluster runtime directory outside cluster root: {}",
                     target);
             return;
         }
@@ -592,12 +620,18 @@ abstract class ClusterControllerTravel extends ClusterControllerMessaging {
                     });
                 }
 
-                MultiFabricServer.LOGGER.info("Deleted cluster runtime directory for '{}': {}", nodeId, target);
+                MultiFabricServer.LOGGER.info(
+                        "Deleted cluster runtime directory for '{}': {}",
+                        nodeId,
+                        target);
                 return;
             } catch (RuntimeException | IOException exception) {
                 if (attempt >= RUNTIME_DIRECTORY_DELETE_ATTEMPTS) {
                     MultiFabricServer.LOGGER.warn(
-                            "Failed to delete cluster runtime directory for '{}' at {}", nodeId, target, exception);
+                            "Failed to delete cluster runtime directory for '{}' at {}",
+                            nodeId,
+                            target,
+                            exception);
                     return;
                 }
 
@@ -635,14 +669,17 @@ abstract class ClusterControllerTravel extends ClusterControllerMessaging {
 
     protected void sendPlayerToHost(MinecraftServer sourceServer, ServerPlayer player, String sourceNodeId,
             boolean useProxySwitch, String proxyTarget, String targetHost, int targetPort) {
-        player.sendSystemMessage(Component.literal("Cluster '" + sourceNodeId + "' is stopping. Sending you to host.")
-                .withStyle(ChatFormatting.YELLOW));
+        player.sendSystemMessage(ClusterMessages.component(player, "cluster.stopping.host_transfer",
+                ClusterMessages.arg("cluster", sourceNodeId)));
         if (useProxySwitch) {
             try {
                 player.connection.send(new ClientboundCustomPayloadPacket(new ProxyConnectPayload(proxyTarget)));
             } catch (Exception exception) {
-                MultiFabricServer.LOGGER.warn("Failed to proxy-switch player {} from node {} to host",
-                        player.getScoreboardName(), sourceNodeId, exception);
+                MultiFabricServer.LOGGER.warn(
+                        "Failed to proxy-switch player {} from node {} to host",
+                        player.getScoreboardName(),
+                        sourceNodeId,
+                        exception);
             }
             return;
         }
@@ -652,12 +689,17 @@ abstract class ClusterControllerTravel extends ClusterControllerMessaging {
             int result = sourceServer.getCommands().getDispatcher().execute(
                     transferCommand, player.createCommandSourceStack());
             if (result <= 0) {
-                MultiFabricServer.LOGGER.warn("Host transfer command did not execute for player {} from node {}",
-                        player.getScoreboardName(), sourceNodeId);
+                MultiFabricServer.LOGGER.warn(
+                        "Host transfer command did not execute for player {} from node {}",
+                        player.getScoreboardName(),
+                        sourceNodeId);
             }
         } catch (Exception exception) {
-            MultiFabricServer.LOGGER.warn("Failed to transfer player {} from node {} to host",
-                    player.getScoreboardName(), sourceNodeId, exception);
+            MultiFabricServer.LOGGER.warn(
+                    "Failed to transfer player {} from node {} to host",
+                    player.getScoreboardName(),
+                    sourceNodeId,
+                    exception);
         }
     }
 }

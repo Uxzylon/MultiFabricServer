@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.Objects;
 
 import org.jspecify.annotations.NonNull;
+import org.jspecify.annotations.Nullable;
 
 import net.minecraft.commands.Commands;
 import net.minecraft.core.Registry;
@@ -54,7 +55,7 @@ final class EmbeddedServerFactory {
     private EmbeddedServerFactory() {
     }
 
-    static Optional<@NonNull EmbeddedServerHandle> tryStartEmbeddedServer(
+    static @Nullable EmbeddedServerHandle tryStartEmbeddedServer(
             MinecraftServer hostServer,
             ClusterNodeDefinition definition,
             @NonNull Path nodeRoot) {
@@ -107,11 +108,11 @@ final class EmbeddedServerFactory {
                     childServer.isStopped(),
                     Thread.currentThread().getName());
 
-            return Optional.of(new DedicatedEmbeddedServerHandle(
+            return new DedicatedEmbeddedServerHandle(
                     definition.id(),
                     childServer,
                     resolvedListenPort,
-                    resolvedListenPort));
+                    resolvedListenPort);
         } catch (Exception exception) {
             MultiFabricServer.LOGGER.error(
                     "Failed to start embedded child server '{}' for world '{}'",
@@ -129,7 +130,7 @@ final class EmbeddedServerFactory {
                 } catch (IOException ignored) {
                 }
             }
-            return Optional.empty();
+            return null;
         }
     }
 
