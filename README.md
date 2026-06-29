@@ -121,5 +121,3 @@ Current local test loop:
 ```bash
 ./gradlew clean build && cp build/libs/multifabricserver-mc26.1-1.0.0.jar server-test/mods/ && cp velocity/build/libs/multifabricserver-velocity-1.0.0.jar server-test/velocity/plugins/ && docker compose -f server-test/docker-compose.yml down && docker compose -f server-test/docker-compose.yml up
 ```
-
-The `server-test/start.sh` launcher can also be run directly without Docker.
