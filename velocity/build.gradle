@@ -2,7 +2,7 @@ plugins {
     id 'java'
 }
 
-version = rootProject.version
+version = rootProject.findProperty("velocity_version") ?: rootProject.version
 group = rootProject.group
 
 base {
@@ -21,6 +21,35 @@ dependencies {
     compileOnly "com.velocitypowered:velocity-api:${rootProject.velocity_api_version}"
     annotationProcessor "com.velocitypowered:velocity-api:${rootProject.velocity_api_version}"
 }
+
+def generatedConstantsDir = layout.buildDirectory.dir("generated/sources/buildConstants/java")
+
+tasks.register("generateBuildConstants") {
+    inputs.property("version", project.version)
+    outputs.dir(generatedConstantsDir)
+
+    doLast {
+        def constantsFile = generatedConstantsDir.get().file("fr/jeanney/velocity/BuildConstants.java").asFile
+        constantsFile.parentFile.mkdirs()
+        constantsFile.text = """package fr.jeanney.velocity;
+
+final class BuildConstants {
+    static final String VERSION = "${project.version}";
+
+    private BuildConstants() {
+    }
+}
+"""
+    }
+}
+
+sourceSets {
+    main {
+        java.srcDir(generatedConstantsDir)
+    }
+}
+
+compileJava.dependsOn(tasks.named("generateBuildConstants"))
 
 tasks.withType(JavaCompile).configureEach {
     options.release = 17

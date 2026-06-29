@@ -11,7 +11,7 @@
 		"homepage": "https://anthony.jeanney.fr",
 		"sources": "https://github.com/Uxzylon/MultiFabricServer"
 	},
-	"license": "CC0-1.0",
+	"license": "MIT",
 	"icon": "assets/multifabricserver/icon.png",
 	"environment": "*",
 	"entrypoints": {

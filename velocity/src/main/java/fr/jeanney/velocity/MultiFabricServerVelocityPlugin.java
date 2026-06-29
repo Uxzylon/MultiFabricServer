@@ -18,7 +18,7 @@ import java.util.Optional;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 
-@Plugin(id = "multifabricserver", name = "MultiFabricServer", version = "1.0.0", description = "Dynamic Velocity backend registration for MultiFabricServer clusters", authors = {
+@Plugin(id = "multifabricserver", name = "MultiFabricServer", version = BuildConstants.VERSION, description = "Dynamic Velocity backend registration for MultiFabricServer clusters", authors = {
         "Uxzylon" })
 public final class MultiFabricServerVelocityPlugin {
 
