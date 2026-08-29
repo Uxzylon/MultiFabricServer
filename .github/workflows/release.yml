@@ -1,0 +1,167 @@
+name: Publish
+run-name: Publish ${{ inputs.component }} as ${{ inputs.release_type }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: Release channel
+        required: true
+        default: beta
+        type: choice
+        options:
+          - beta
+          - release
+      component:
+        description: Component to publish
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - fabric
+          - velocity
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require main branch
+        if: github.ref_name != 'main'
+        run: |
+          echo "Releases must be started from the main branch."
+          exit 1
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: microsoft
+          java-version: '25'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Resolve versions
+        id: release
+        shell: bash
+        env:
+          COMPONENT: ${{ inputs.component }}
+          RELEASE_TYPE: ${{ inputs.release_type }}
+        run: |
+          set -euo pipefail
+
+          property() {
+            sed -n "s/^$1=//p" gradle.properties | tail -n 1
+          }
+
+          release_version() {
+            local base="$1"
+            local prefix="$2"
+
+            if [[ "$RELEASE_TYPE" == "release" ]]; then
+              printf '%s' "$base"
+              return
+            fi
+
+            local stem="${prefix}${base}-beta."
+            local highest=0
+            local tag suffix
+            while IFS= read -r tag; do
+              suffix="${tag#"$stem"}"
+              if [[ "$suffix" =~ ^[0-9]+$ ]] && (( suffix > highest )); then
+                highest="$suffix"
+              fi
+            done < <(git tag --list "${stem}*")
+
+            printf '%s-beta.%d' "$base" "$((highest + 1))"
+          }
+
+          require_unused_tag() {
+            if git rev-parse --verify --quiet "refs/tags/$1" >/dev/null; then
+              echo "Git tag '$1' already exists. Update the version in gradle.properties first."
+              exit 1
+            fi
+          }
+
+          fabric_base="$(property mod_version)"
+          velocity_base="$(property velocity_version)"
+          minecraft_version="$(property minecraft_version)"
+          [[ -n "$fabric_base" && -n "$velocity_base" && -n "$minecraft_version" ]]
+
+          fabric_version="$(release_version "$fabric_base" 'v')"
+          velocity_version="$(release_version "$velocity_base" 'velocity-v')"
+          fabric_tag="v${fabric_version}"
+          velocity_tag="velocity-v${velocity_version}"
+
+          if [[ "$COMPONENT" == "all" || "$COMPONENT" == "fabric" ]]; then
+            require_unused_tag "$fabric_tag"
+          fi
+          if [[ "$COMPONENT" == "all" || "$COMPONENT" == "velocity" ]]; then
+            require_unused_tag "$velocity_tag"
+          fi
+
+          {
+            echo "fabric_version=$fabric_version"
+            echo "fabric_tag=$fabric_tag"
+            echo "velocity_version=$velocity_version"
+            echo "velocity_tag=$velocity_tag"
+            echo "minecraft_version=$minecraft_version"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Fabric:  $fabric_tag"
+          echo "Velocity: $velocity_tag"
+
+      - name: Build
+        run: >-
+          ./gradlew clean build
+          -Pmod_version=${{ steps.release.outputs.fabric_version }}
+          -Pvelocity_version=${{ steps.release.outputs.velocity_version }}
+
+      - name: Publish Fabric mod
+        if: inputs.component == 'all' || inputs.component == 'fabric'
+        uses: Kir-Antipov/mc-publish@v3.3
+        with:
+          modrinth-id: multifabricserver
+          modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
+          modrinth-featured: false
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-tag: ${{ steps.release.outputs.fabric_tag }}
+          github-prerelease: ${{ inputs.release_type == 'beta' }}
+          files: build/libs/!(*-@(dev|sources|javadoc)).jar
+          name: MultiFabricServer ${{ steps.release.outputs.fabric_version }}
+          version: ${{ steps.release.outputs.fabric_version }}
+          version-type: ${{ inputs.release_type }}
+          loaders: fabric
+          game-versions: ${{ steps.release.outputs.minecraft_version }}
+          java: 25
+
+      - name: Publish Velocity companion
+        if: inputs.component == 'all' || inputs.component == 'velocity'
+        uses: Kir-Antipov/mc-publish@v3.3
+        with:
+          modrinth-id: multifabricserver
+          modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
+          modrinth-featured: false
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-tag: ${{ steps.release.outputs.velocity_tag }}
+          github-prerelease: ${{ inputs.release_type == 'beta' }}
+          files: velocity/build/libs/!(*-@(dev|sources|javadoc)).jar
+          name: MultiFabricServer Velocity ${{ steps.release.outputs.velocity_version }}
+          version: velocity-${{ steps.release.outputs.velocity_version }}
+          version-type: ${{ inputs.release_type }}
+          loaders: velocity
+          game-versions: ${{ steps.release.outputs.minecraft_version }}
+          java: 17
