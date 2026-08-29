@@ -42,3 +42,6 @@ replay_*.log
 .*/
 !.github/
 .pat
+*.md
+!README.md
+!AGENTS.md
